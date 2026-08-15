@@ -372,6 +372,12 @@ list_portable_serial() {
 # only: the shard partition stays complete and disjoint whatever they say, so a
 # stale hint costs balance rather than coverage. That doc owns the refresh
 # procedure.
+#
+# One row is not from that artifact and says so here rather than reading as if
+# it were: tests/fm-destructive-automation.test.sh is new in this change, so no
+# CI run has ever timed it. Its hint is a local uncontended measurement, which
+# is the only number available and is good enough for a balance hint. The next
+# refresh from a green run's artifact overwrites it like any other row.
 portable_serial_weight_hints() {
   cat <<'EOF'
 tests/fm-afk-inject-e2e.test.sh 34019
@@ -396,7 +402,7 @@ tests/fm-claude-stop-autoarm-live-e2e.test.sh 19
 tests/fm-claude-stop-autoarm.test.sh 60521
 tests/fm-codex-continuity-live-e2e.test.sh 19
 tests/fm-daemon.test.sh 15140
-tests/fm-destructive-automation.test.sh 107383
+tests/fm-destructive-automation.test.sh 134320
 tests/fm-documentation-audiences.test.sh 572
 tests/fm-fleet-snapshot-view.test.sh 5902
 tests/fm-fleet-sync.test.sh 24012

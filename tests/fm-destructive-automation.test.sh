@@ -64,8 +64,14 @@ assert_contains "$out" "reviewed_call_sites=" \
 # Rule 3's verb class is a list, so the number of sweep lines it licenses is the
 # list's price. Pinning it means widening the class without reading the lines it
 # newly catches fails here rather than passing quietly with a bigger allowlist.
-assert_contains "$out" "reviewed_sweep_lines=10" \
-  "the shipped sweep must license its ten reviewed lines, not silently more"$'\n'"--- output ---"$'\n'"$out"
+assert_contains "$out" "reviewed_sweep_lines=17" \
+  "the shipped sweep must license its seventeen reviewed lines, not silently more"$'\n'"--- output ---"$'\n'"$out"
+# The sweep's scope is the other half of that price, and it moves for a different
+# reason: a new `.` line in the sweep or in anything it already sources pulls a
+# whole file into rule 3. Pinning the count means that arrives as a decision
+# here rather than as a quietly larger scan nobody chose.
+assert_contains "$out" "sweep_scope=3" \
+  "the shipped sweep's scope must be the three files that were reviewed"$'\n'"--- output ---"$'\n'"$out"
 pass "the shipped tree has no unreviewed destructive automation"
 
 # --- the fixture is a faithful basis ----------------------------------------
@@ -320,7 +326,7 @@ git -C "$FIXTURE" add -A >/dev/null 2>&1
 out=$(run_check "$FIXTURE")
 assert_contains "$out" "rc=1" \
   "removals in the startup sweep must fail"$'\n'"--- output ---"$'\n'"$out"
-assert_contains "$out" "not one of the startup sweep's reviewed lines" \
+assert_contains "$out" "not one of the sweep's reviewed lines" \
   "the failure must say the line is unreviewed"
 for spelling in "${SWEEP_SPELLINGS[@]}"; do
   assert_contains "$out" "$spelling" \
@@ -1233,7 +1239,7 @@ git -C "$FIXTURE" add -A >/dev/null 2>&1
 out=$(run_check "$FIXTURE")
 assert_contains "$out" "rc=1" \
   "a quoted hash must not hide a removal from rule 3"$'\n'"--- output ---"$'\n'"$out"
-assert_contains "$out" "not one of the startup sweep's reviewed lines" \
+assert_contains "$out" "not one of the sweep's reviewed lines" \
   "the failure must be rule 3's, not an unrelated one"
 pass "comment cut: a quoted hash cannot hide a removal from rule 3"
 
@@ -1348,7 +1354,7 @@ git -C "$FIXTURE" add -A >/dev/null 2>&1
 out=$(run_check "$FIXTURE")
 assert_contains "$out" "rc=1" \
   "an unguarded checkout must not inherit the guarded one's approval"$'\n'"--- output ---"$'\n'"$out"
-assert_contains "$out" "not one of the startup sweep's reviewed lines" \
+assert_contains "$out" "not one of the sweep's reviewed lines" \
   "the failure must be rule 3's, not an unrelated one"
 pass "anchoring: dropping a reviewed line's guard drops its approval with it"
 
@@ -1361,7 +1367,7 @@ git -C "$FIXTURE" add -A >/dev/null 2>&1
 out=$(run_check "$FIXTURE")
 assert_contains "$out" "rc=1" \
   "an unguarded removal must not inherit the guarded one's approval"$'\n'"--- output ---"$'\n'"$out"
-assert_contains "$out" "not one of the startup sweep's reviewed lines" \
+assert_contains "$out" "not one of the sweep's reviewed lines" \
   "the failure must be rule 3's, not an unrelated one"
 pass "anchoring: a reviewed removal's suffix is not itself reviewed"
 
@@ -1438,3 +1444,83 @@ assert_contains "$out" "rc=1" "a repository with no tracked bin/ scripts must fa
 assert_contains "$out" "no tracked bin/ scripts were found" \
   "the failure must say the scan found nothing to scan"
 pass "fail-closed: an empty scan basis fails instead of reporting ok"
+
+# --- the sweep cannot delegate its way out of rule 3 ------------------------
+#
+# Regression fixtures for a fail-open rule 3 had while its scope was one FILE.
+# The sweep runs unattended, so what matters is what its boot can reach, and a
+# deletion moved one step away was invisible: the call named no destructive verb,
+# and the `rm` sat in a file the rule did not read. Both halves below passed the
+# shipped check.
+#
+# The first is the reported form, and the cheapest to write: add a script, call
+# it from the sweep. Nobody has to have reviewed the new file for this to ship.
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+cat > "$FIXTURE/bin/fm-clean-clone.sh" <<'EOF'
+#!/usr/bin/env bash
+rm -rf "$1"
+EOF
+chmod +x "$FIXTURE/bin/fm-clean-clone.sh"
+cat >> "$FIXTURE/bin/fm-fleet-sync.sh" <<'EOF'
+
+"$FM_ROOT/bin/fm-clean-clone.sh" "$PROJECTS" || true
+EOF
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=1" \
+  "the sweep handing its work to a new script must fail"$'\n'"--- output ---"$'\n'"$out"
+assert_contains "$out" "fm-clean-clone.sh" \
+  "the failure must name the handoff line, not some other finding"$'\n'"--- output ---"$'\n'"$out"
+pass "rule 3: the sweep cannot reach a deletion through a script it calls"
+
+# The second half is why the scope is a closure and not a hand-written pair:
+# sourced code runs in the sweep's own shell, so a deletion in a sourced library
+# is a deletion in the sweep, at one remove the file-scoped rule could not see.
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+cat >> "$FIXTURE/bin/fm-lock-lib.sh" <<'EOF'
+
+rm -rf "$FM_HOME/projects"
+EOF
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=1" \
+  "a deletion in a library the sweep sources must fail"$'\n'"--- output ---"$'\n'"$out"
+assert_contains "$out" "fm-lock-lib.sh" \
+  "the failure must name the sourced file the line is in"$'\n'"--- output ---"$'\n'"$out"
+pass "rule 3: a sourced library is in the sweep's scope, not outside it"
+
+# The closure is transitive, so the same deletion is still found when the sweep
+# reaches the library through another one. A one-level scope would pass this.
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+cat > "$FIXTURE/bin/fm-deep-lib.sh" <<'EOF'
+#!/usr/bin/env bash
+rm -rf "$FM_HOME/projects"
+EOF
+cat >> "$FIXTURE/bin/fm-lock-lib.sh" <<'EOF'
+
+# shellcheck source=bin/fm-deep-lib.sh
+. "$SCRIPT_DIR/fm-deep-lib.sh"
+EOF
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=1" \
+  "a deletion two sourcing steps from the sweep must fail"$'\n'"--- output ---"$'\n'"$out"
+assert_contains "$out" "fm-deep-lib.sh" \
+  "the failure must name the transitively-sourced file"$'\n'"--- output ---"$'\n'"$out"
+pass "rule 3: the sweep's sourced scope is transitive, not one level deep"
+
+# The scope is itself a basis the rule reads, so it fails closed when it cannot
+# be determined: a sourcing line naming no tracked script leaves a branch of the
+# sweep's own shell unread, which is precisely what rule 3 exists to refuse.
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+cat >> "$FIXTURE/bin/fm-fleet-sync.sh" <<'EOF'
+
+. "$FM_HOME/config/site-overrides"
+EOF
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=1" \
+  "sourcing an unreadable file must fail rather than narrow the scope silently"$'\n'"--- output ---"$'\n'"$out"
+assert_contains "$out" "the sweep's scope cannot be determined" \
+  "the failure must say the scope, not a line, is what it lost"$'\n'"--- output ---"$'\n'"$out"
+pass "fail-closed: an unresolvable sourcing line fails instead of shrinking rule 3"

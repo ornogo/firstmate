@@ -22,8 +22,9 @@
 #   1. prune_gone_branches does not exist anywhere in the fork.
 #   2. `git branch` runs only in founder-run bin/fm-teardown.sh, or on a
 #      reviewed line.
-#   3. The startup sweep (bin/fm-fleet-sync.sh) runs nothing removal-capable
-#      except its two reviewed lines.
+#   3. The startup sweep - bin/fm-fleet-sync.sh plus every tracked script it
+#      sources - runs nothing removal-capable except on a reviewed line, and
+#      hands work to no other script except on one.
 #   4. Every reference to a destructive helper anywhere in tracked bin/ whose
 #      name survives quote and backslash removal is in the reviewed allowlist
 #      below. A new call site - which is what "a new automatic caller" looks
@@ -95,6 +96,44 @@
 # scan can see. What differs is the blast radius of the residue, not its
 # existence. Any check made of text has this edge; the useful question is
 # whether the ordinary spelling fails closed, and after these rules it does.
+#
+# Rule 3's subject is the startup sweep, and a sweep that hands its work to
+# another script is still the sweep. Scoping the rule to one FILE was this
+# header's own failure mode one level up: a new `bin/fm-clean-clone.sh` holding
+# `rm -rf "$1"`, plus a call to it from the sweep, passed every rule, because
+# the call names no destructive verb and the `rm` sits outside the scanned file.
+# The hole was not hypothetical - the sweep already reaches four other tracked
+# scripts, and against the rule as it stood, an `rm -rf "$1"` appended to any of
+# them was measured rc=0.
+#
+# So rule 3's scope is the sweep's IN-PROCESS closure: the entry point plus
+# every tracked script it transitively sources. Sourced code runs in the sweep's
+# own shell, so those lines ARE the sweep's lines, and reading them is a
+# correction rather than an approximation. Handing work to another PROCESS is
+# the other half, and every reference from that scope to a tracked bin/ script
+# is flagged like any other destructive line: it needs a reviewed entry whose
+# reason says why that script cannot destroy work.
+#
+# That boundary sits where it does because the alternative was measured. To
+# follow execution into a called script's contents is to scan its transitive
+# reach, and the only sound - i.e. text-based, no parser - reachability test is
+# by mention. Measured in the form most favourable to it, over executable lines
+# only, that closure reaches 91 of the fork's 140 tracked bin/ scripts:
+# effectively the whole fork, bin/fm-teardown.sh among them, whose
+# sanctioned deletions would then each need an entry asserting the sweep cannot
+# really reach them - a claim no text scan can check, which is the worst kind of
+# entry this file can hold. The reviewed-boundary form costs seven entries
+# instead: four handoffs, and three lines in the timing library that the sweep
+# sources and this rule therefore now reads.
+#
+# What it does not do is verify the four handoff reasons, and the residue is
+# stated rather than implied: appending `rm -rf "$1"` to bin/fm-project-mode.sh,
+# which one of them already licenses, was measured rc=0. The two forms differ in
+# what a bypass costs to write, not in whether one exists. Adding a script and
+# calling it is a diff nobody has to have read before; falsifying a reviewed
+# reason means editing a file a human vouched for, in the one place that names it
+# and says what it may do. Rule 3 proves the sweep's own process destroys
+# nothing, and names every handoff out of it for a human to judge.
 #
 # Every allowlist below licenses exactly one occurrence. An entry does not say
 # "this text is approved", it says "this occurrence is approved": a second copy
@@ -187,7 +226,9 @@ NL='
 # branch deletion, and nothing reaches it automatically.
 TEARDOWN=bin/fm-teardown.sh
 
-# The startup sweep bin/fm-bootstrap.sh backgrounds on every boot.
+# The startup sweep bin/fm-bootstrap.sh backgrounds on every boot. This is the
+# entry point; rule 3's actual scope is SWEEP_SCOPE, computed below as the
+# sweep plus every tracked script it transitively sources.
 SWEEP=bin/fm-fleet-sync.sh
 
 # This check and its test, which state the rules and so must name what the
@@ -423,23 +464,50 @@ SWEEP_VERSION='([0-9]+([.][0-9]+)*)?'
 # `=` in every convention that has one - so requiring it there costs nothing and
 # keeps `--outdated` out.
 SWEEP_OUTPUT_OPT='[[:space:]]-[oO]|[[:space:]]--(output|output-file|out|outfile)([[:space:]]|=)|[[:space:]]of='
-SWEEP_FORBIDDEN='(^|[^[:alnum:]_.-])('"$SWEEP_VERBS_REMOVE"'|'"$SWEEP_VERBS_INPLACE"'|'"$SWEEP_VERBS_REWRITE"'|'"$SWEEP_VERBS_INTERP"'|'"$SWEEP_VERBS_FETCH"')'"$SWEEP_VERSION"'([[:space:]]|$)|'"$SWEEP_OUTPUT_OPT"'|git.*[[:space:]](branch|worktree|clean|gc|prune|reflog|update-ref|reset|checkout|restore|switch|stash|push|merge|rebase|cherry-pick|revert|am|apply|read-tree|sparse-checkout|submodule|filter-branch|replace|notes|tag|update-index|repack|symbolic-ref|remote|bisect|mv)([[:space:]]|$)|-delete([[:space:]]|$)|-exec[[:space:]]+[^[:space:]]*rm'
+# Every tracked bin/ script, by basename. Handing work to another script is the
+# one way the sweep can destroy work without naming a destructive verb, so a
+# reference to one from the sweep's scope is flagged like any other line and
+# needs a reviewed reason. Built from the tree rather than written down, so a
+# script added under bin/ is covered the day it lands - including a brand-new
+# one added specifically to hold the deletion, which is the bypass this closes.
+#
+# Basenames, not paths, because that is how they are invoked: through
+# "$SCRIPT_DIR/", "$FM_ROOT/bin/", or a bare name on PATH. The `.` is escaped
+# because this is an ERE, where an unescaped dot would match the separator too.
+SWEEP_SCRIPTS=$(git ls-files -- 'bin/*' | sed 's#.*/##; s/[.]/[.]/g' | sort -u | paste -sd '|' -)
+SWEEP_SCRIPT_RE='(^|[^[:alnum:]_.-])('"$SWEEP_SCRIPTS"')([^[:alnum:]_-]|$)'
 
-# The sweep's reviewed lines, as "<normalized line><TAB><reason>", normalized
-# the same way as ALLOWLIST below. Every reason has to hold for the sweep's
-# unattended context: nothing here may destroy work.
+SWEEP_FORBIDDEN='(^|[^[:alnum:]_.-])('"$SWEEP_VERBS_REMOVE"'|'"$SWEEP_VERBS_INPLACE"'|'"$SWEEP_VERBS_REWRITE"'|'"$SWEEP_VERBS_INTERP"'|'"$SWEEP_VERBS_FETCH"')'"$SWEEP_VERSION"'([[:space:]]|$)|'"$SWEEP_OUTPUT_OPT"'|git.*[[:space:]](branch|worktree|clean|gc|prune|reflog|update-ref|reset|checkout|restore|switch|stash|push|merge|rebase|cherry-pick|revert|am|apply|read-tree|sparse-checkout|submodule|filter-branch|replace|notes|tag|update-index|repack|symbolic-ref|remote|bisect|mv)([[:space:]]|$)|-delete([[:space:]]|$)|-exec[[:space:]]+[^[:space:]]*rm|'"$SWEEP_SCRIPT_RE"
+
+# The sweep's reviewed lines, as "<path><TAB><normalized line><TAB><reason>",
+# normalized the same way as ALLOWLIST below. The path is part of the key
+# because rule 3's scope is the sweep plus the scripts it sources, so the same
+# text in two of those files is two separate lines to review. Every reason has
+# to hold for the sweep's unattended context: nothing here may destroy work.
+#
+# The last four are the process boundary. Their reasons are the one kind this
+# file cannot check, because they describe a script this scan does not read; the
+# header says why that boundary is where it is, and each one is written to be
+# judged as the claim it is.
 SWEEP_ALLOWLIST=$(
   cat <<'ENTRIES'
-if ! rm -f "$lock"; then	a single non-recursive rm -f of a provably-stale .git/packed-refs.lock, which holds no work
-git -C "$PROJ" worktree list --porcelain 2>/dev/null | sed -n 's#^branch refs/heads/##p' | grep -Fxq -- "$DEFAULT"	a read: the whole pipeline lists worktrees and asks whether one holds the default branch, removing none
-if ! git -C "$PROJ" checkout --quiet "$DEFAULT" 2>/dev/null; then	re-attaches a detached HEAD the branch above has already proven clean, free of unique commits, and an ancestor of the base; --quiet is not --force, so git aborts rather than overwrite, and every other drift is reported and left untouched
-ref=$(git -C "$PROJ" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)	a read: symbolic-ref with no ref-and-value pair and no --delete resolves origin/HEAD and prints it; the || true swallows the failure when it is unset
-cur=$(git -C "$PROJ" symbolic-ref --short HEAD 2>/dev/null || echo "")	the same read against HEAD, asking which branch is checked out before deciding anything; it writes nothing and its failure path yields the empty string
-if ! git -C "$PROJ" remote get-url origin >/dev/null 2>&1; then	a read: the get-url subcommand prints a remote URL, and the failure branch reports "no origin remote" and returns; remote is flagged for its remove, prune and set-url subcommands, which this line does not use
-if ! merge_output=$(git -C "$PROJ" merge --ff-only "$BASE" 2>&1); then	the only line in the sweep that writes the working tree: --ff-only refuses to merge and exits non-zero unless the local ref is already an ancestor of the base, so it can only advance a branch that has no commits of its own, and the lines above have already proven the tree clean, the branch an ancestor, and the base a real commit; the failure path reports and returns without a second attempt
-printf '%s\n' "$1" | sed -n '1s/[[:space:]]\{1,\}/ /g;1p'	a read: with no -i and no w command, sed -n writes only to stdout; this collapses the whitespace runs in its argument and prints the first line, touching no file
-echo "usage: fm-fleet-sync.sh [<project-dir-or-name>]" >&2	the > is prose inside the usage text, in the placeholder <project-dir-or-name>; the line's only real redirect is >&2, a descriptor duplication that names no file
-echo "$label: removed provably-stale packed-refs lock $lock (age >= ${FLEET_SYNC_PACKED_REFS_LOCK_AGE_SECS}s, no live holder) and retrying fetch" >&2	the > is prose inside the message text, in the comparison >=; the line's only real redirect is >&2, which names no file
+bin/fm-fleet-sync.sh	if ! rm -f "$lock"; then	a single non-recursive rm -f of a provably-stale .git/packed-refs.lock, which holds no work
+bin/fm-fleet-sync.sh	git -C "$PROJ" worktree list --porcelain 2>/dev/null | sed -n 's#^branch refs/heads/##p' | grep -Fxq -- "$DEFAULT"	a read: the whole pipeline lists worktrees and asks whether one holds the default branch, removing none
+bin/fm-fleet-sync.sh	if ! git -C "$PROJ" checkout --quiet "$DEFAULT" 2>/dev/null; then	re-attaches a detached HEAD the branch above has already proven clean, free of unique commits, and an ancestor of the base; --quiet is not --force, so git aborts rather than overwrite, and every other drift is reported and left untouched
+bin/fm-fleet-sync.sh	ref=$(git -C "$PROJ" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)	a read: symbolic-ref with no ref-and-value pair and no --delete resolves origin/HEAD and prints it; the || true swallows the failure when it is unset
+bin/fm-fleet-sync.sh	cur=$(git -C "$PROJ" symbolic-ref --short HEAD 2>/dev/null || echo "")	the same read against HEAD, asking which branch is checked out before deciding anything; it writes nothing and its failure path yields the empty string
+bin/fm-fleet-sync.sh	if ! git -C "$PROJ" remote get-url origin >/dev/null 2>&1; then	a read: the get-url subcommand prints a remote URL, and the failure branch reports "no origin remote" and returns; remote is flagged for its remove, prune and set-url subcommands, which this line does not use
+bin/fm-fleet-sync.sh	if ! merge_output=$(git -C "$PROJ" merge --ff-only "$BASE" 2>&1); then	the only line in the sweep that writes the working tree: --ff-only refuses to merge and exits non-zero unless the local ref is already an ancestor of the base, so it can only advance a branch that has no commits of its own, and the lines above have already proven the tree clean, the branch an ancestor, and the base a real commit; the failure path reports and returns without a second attempt
+bin/fm-fleet-sync.sh	printf '%s\n' "$1" | sed -n '1s/[[:space:]]\{1,\}/ /g;1p'	a read: with no -i and no w command, sed -n writes only to stdout; this collapses the whitespace runs in its argument and prints the first line, touching no file
+bin/fm-fleet-sync.sh	echo "usage: fm-fleet-sync.sh [<project-dir-or-name>]" >&2	the > is prose inside the usage text, in the placeholder <project-dir-or-name>; the line's only real redirect is >&2, a descriptor duplication that names no file
+bin/fm-fleet-sync.sh	echo "$label: removed provably-stale packed-refs lock $lock (age >= ${FLEET_SYNC_PACKED_REFS_LOCK_AGE_SECS}s, no live holder) and retrying fetch" >&2	the > is prose inside the message text, in the comparison >=; the line's only real redirect is >&2, which names no file
+bin/fm-fleet-sync.sh	. "$SCRIPT_DIR/fm-lock-lib.sh"	sources the lock library into the sweep's own shell, which is why rule 3 reads that file's lines as the sweep's own: they are in scope above, and the sweep's scope is checked, not trusted
+bin/fm-fleet-sync.sh	. "$SCRIPT_DIR/fm-timing-lib.sh"	the same, for the timing library; both are leaves that source nothing further, so the scope this line extends is fully read
+bin/fm-fleet-sync.sh	"$FM_ROOT/bin/fm-guard.sh" || true	hands work to another process, so its contents are outside this scan: bin/fm-guard.sh documents itself as advisory - it always exits 0, warns rather than blocks, and its only write is the volatile banner marker under state/, holding no work
+bin/fm-fleet-sync.sh	mode_line=$("$FM_ROOT/bin/fm-project-mode.sh" "$label" 2>/dev/null || echo "no-mistakes off")	the same boundary: bin/fm-project-mode.sh resolves a project's registered posture from the data/projects.md registry and prints two words to stdout, and the 2>/dev/null names no file
+bin/fm-timing-lib.sh	: > "$file" 2>/dev/null || return 0	creates the run's own timing artifact at the path its caller passes to fm_timing_start; the sweep sources this file for fm_timing_record and never calls fm_timing_start, whose only caller in the tree is bin/fm-startup-network.sh with a file under that run's own directory
+bin/fm-timing-lib.sh	awk -F'\t' '	flagged for awk's in-place capability: this invocation has no -i and no inplace, and the program it opens - the rest of which is quoted, so it reaches this scan as its own lines - only reads records and prints the render to stdout
+bin/fm-timing-lib.sh	if (elapsed[j] > elapsed[i]) {	the > is awk's greater-than inside that program, comparing two elapsed times to sort them; the shell never sees it, and the awk it belongs to redirects nothing
 ENTRIES
 )
 
@@ -558,8 +626,7 @@ probe_filter() {
 }
 
 # Exact-key membership in a "<key><TAB>...<TAB><reason>" allowlist. The key is
-# "<path><TAB><normalized line>" for rules 2 and 4 and the normalized line alone
-# for rule 3.
+# "<path><TAB><normalized line>" for every rule.
 #
 # The match is anchored at both ends: `case` matches an entry from its first
 # character, and the trailing TAB ends the key field. A substring test - which
@@ -572,9 +639,12 @@ probe_filter() {
 # form, both `git -C "$PROJ" checkout --quiet "$DEFAULT" 2>/dev/null; then` and
 # `rm -f "$lock"; then` passed rule 3 unreviewed.
 #
-# Rules 2 and 4 were not exploitable that way today, but only because their key
-# starts with a path and no tracked bin/ path is a suffix of another - a
-# property of the tree, not a guarantee of the test. They are anchored here too.
+# That measurement predates rule 3's path-prefixed key, which now blocks those
+# two suffixes on its own: no hit's key can be a suffix of a reviewed key while
+# both start at a tracked bin/ path and no such path is a suffix of another. But
+# that is a property of the tree, not a guarantee of the test - one path becomes
+# a suffix of another the day a script is renamed - so every rule stays anchored
+# here, where the property is not relied on at all.
 allow_has() {
   allow_list=$1
   allow_key=$2
@@ -677,6 +747,63 @@ EXEC_LINES=$(
 
 SCANNED=$(git ls-files -- 'bin/*' | wc -l | tr -d ' ')
 [ "$SCANNED" -gt 0 ] || fail "no tracked bin/ scripts were found under $ROOT"
+# An empty SWEEP_SCRIPTS would leave an alternation with an empty branch, which
+# matches everywhere. That direction is fail-closed - every line in scope becomes
+# a finding - but the message would be baffling, so say it plainly. It can only
+# happen alongside the failure above.
+[ -n "$SWEEP_SCRIPTS" ] || fail "no tracked bin/ script names were found; rule 3 cannot check the sweep's handoffs"
+
+# Rule 3's scope: the sweep plus every tracked script it transitively sources.
+# Sourced code runs in the sweep's own shell, so those lines are the sweep's own
+# and reading them is a correction, not an approximation - see the header for why
+# the scope stops at the process boundary and does not follow execution.
+#
+# A fixed point over a space-separated list, which is safe because a tracked
+# bin/ path cannot contain a space: git ls-files would quote it, and the loop
+# below only ever appends names it read back out of that listing.
+SWEEP_SOURCE_RE='(^|[^[:alnum:]_./-])(\.|source)[[:space:]]'
+SQ=$(printf "\047")
+SWEEP_SCOPE=$SWEEP
+sweep_pending=$SWEEP
+while [ -n "$sweep_pending" ]; do
+  sweep_next=""
+  for sweep_from in $sweep_pending; do
+    while IFS= read -r sweep_hit; do
+      [ -n "$sweep_hit" ] || continue
+      sweep_rest=${sweep_hit#*"$TAB"}
+      sweep_lineno=${sweep_rest%%"$TAB"*}
+      sweep_code=${sweep_rest#*"$TAB"}
+      # Same probe the rules read: quotes and backslashes stripped, so
+      # `. "$SCRIPT_DIR/fm-lock-lib.sh"` yields the basename plainly.
+      sweep_probe=$(printf '%s\n' "$sweep_code" | tr -d "\"$SQ\\\\")
+      sweep_found=""
+      for sweep_name in $(git ls-files -- 'bin/*' | sed 's#.*/##'); do
+        case $sweep_probe in
+          *"$sweep_name"*) sweep_found="bin/$sweep_name" ;;
+        esac
+      done
+      if [ -z "$sweep_found" ]; then
+        # A sourcing line naming no tracked script sources something this scan
+        # cannot read, so the scope is unknown and the rule cannot make its
+        # claim. Fail rather than skip: an unreadable branch of the sweep's own
+        # shell is exactly what this rule exists to refuse.
+        fail "${sweep_from}:${sweep_lineno} sources a script this check cannot resolve to a tracked bin/ file, so the sweep's scope cannot be determined:"
+        printf '  %s\n' "$sweep_code" >&2
+        continue
+      fi
+      case " $SWEEP_SCOPE $sweep_next " in
+        *" $sweep_found "*) ;;
+        *) sweep_next="$sweep_next $sweep_found" ;;
+      esac
+    done <<EOF
+$(printf '%s\n' "$EXEC_LINES" | grep -E -- "^${sweep_from}${TAB}" | probe_filter "$SWEEP_SOURCE_RE")
+EOF
+  done
+  SWEEP_SCOPE="$SWEEP_SCOPE$sweep_next"
+  sweep_pending=$sweep_next
+done
+# shellcheck disable=SC2086 # SWEEP_SCOPE is a space-separated list; splitting it is the point.
+SWEEP_SCOPE_COUNT=$(printf '%s\n' $SWEEP_SCOPE | wc -l | tr -d ' ')
 
 # --- rule 1: prune_gone_branches is gone -----------------------------------
 
@@ -720,21 +847,23 @@ if [ ! -f "$SWEEP" ]; then
   fail "$SWEEP is missing; the startup-sweep rule cannot be checked"
 else
   SWEEP_SEEN=""
-  while IFS= read -r hit; do
-    [ -n "$hit" ] || continue
-    rest=${hit#*"$TAB"}
-    lineno=${rest%%"$TAB"*}
-    norm=$(printf '%s\n' "${rest#*"$TAB"}" | awk '{ $1 = $1; print }')
-    SWEEP_SEEN="${SWEEP_SEEN}${norm}${NL}"
-    if allow_has "$SWEEP_ALLOWLIST" "$norm"; then
-      continue
-    fi
-    fail "${SWEEP}:${lineno} can destroy work - remove a branch, a worktree, or a path, or overwrite the working tree - and is not one of the startup sweep's reviewed lines:"
-    printf '  %s\n' "$norm" >&2
-    printf '  The startup sweep runs unattended on every boot. Remove it, or add it to SWEEP_ALLOWLIST in bin/fm-destructive-automation-check.sh with a reason that says why it cannot destroy work.\n' >&2
-  done <<EOF
-$(printf '%s\n' "$EXEC_LINES" | grep -E -- "^${SWEEP}${TAB}" | probe_filter "$SWEEP_FORBIDDEN" redirect)
+  for sweep_file in $SWEEP_SCOPE; do
+    while IFS= read -r hit; do
+      [ -n "$hit" ] || continue
+      rest=${hit#*"$TAB"}
+      lineno=${rest%%"$TAB"*}
+      norm=$(printf '%s\n' "${rest#*"$TAB"}" | awk '{ $1 = $1; print }')
+      SWEEP_SEEN="${SWEEP_SEEN}${sweep_file}${TAB}${norm}${NL}"
+      if allow_has "$SWEEP_ALLOWLIST" "${sweep_file}${TAB}${norm}"; then
+        continue
+      fi
+      fail "${sweep_file}:${lineno} runs in the startup sweep and can destroy work - remove a branch, a worktree, or a path, overwrite the working tree, or hand the job to another script - and is not one of the sweep's reviewed lines:"
+      printf '  %s\n' "$norm" >&2
+      printf '  The startup sweep runs unattended on every boot, and this file is in its scope: it is the sweep itself, or a script the sweep sources into its own shell. Remove the line, or add it to SWEEP_ALLOWLIST in bin/fm-destructive-automation-check.sh with a reason that says why it cannot destroy work.\n' >&2
+    done <<EOF
+$(printf '%s\n' "$EXEC_LINES" | grep -E -- "^${sweep_file}${TAB}" | probe_filter "$SWEEP_FORBIDDEN" redirect)
 EOF
+  done
 
   check_entry_counts "$SWEEP_ALLOWLIST" "$SWEEP_SEEN" SWEEP_ALLOWLIST "rule 3" line
 fi
@@ -800,5 +929,5 @@ fi
 REVIEWED=$(printf '%s\n' "$ALLOWLIST" | grep -c . || true)
 SWEEP_REVIEWED=$(printf '%s\n' "$SWEEP_ALLOWLIST" | grep -c . || true)
 BRANCH_REVIEWED=$(printf '%s\n' "$BRANCH_ALLOWLIST" | grep -c . || true)
-printf 'fm-destructive-automation-check: ok scripts=%s reviewed_call_sites=%s reviewed_branch_lines=%s reviewed_sweep_lines=%s\n' \
-  "$SCANNED" "$REVIEWED" "$BRANCH_REVIEWED" "$SWEEP_REVIEWED"
+printf 'fm-destructive-automation-check: ok scripts=%s reviewed_call_sites=%s reviewed_branch_lines=%s sweep_scope=%s reviewed_sweep_lines=%s\n' \
+  "$SCANNED" "$REVIEWED" "$BRANCH_REVIEWED" "$SWEEP_SCOPE_COUNT" "$SWEEP_REVIEWED"
