@@ -238,6 +238,35 @@ fail() {
   FAILURES=$((FAILURES + 1))
 }
 
+# Exact-key membership in a "<key><TAB>...<TAB><reason>" allowlist. The key is
+# "<path><TAB><normalized line>" for rules 2 and 4 and the normalized line alone
+# for rule 3.
+#
+# The match is anchored at both ends: `case` matches an entry from its first
+# character, and the trailing TAB ends the key field. A substring test - which
+# is what `grep -F` gives - is anchored at neither, so a hit that is merely a
+# *suffix* of a reviewed line inherits that line's approval. Suffix is the
+# dangerous direction, because a reviewed line is usually longer than the bare
+# destructive command it wraps: rule 3's reviewed sweep checkout is safe
+# precisely because of the `if !` guard its reason cites, and dropping that
+# guard leaves a suffix of the reviewed line. Measured against the unanchored
+# form, both `git -C "$PROJ" checkout --quiet "$DEFAULT" 2>/dev/null; then` and
+# `rm -f "$lock"; then` passed rule 3 unreviewed.
+#
+# Rules 2 and 4 were not exploitable that way today, but only because their key
+# starts with a path and no tracked bin/ path is a suffix of another - a
+# property of the tree, not a guarantee of the test. They are anchored here too.
+allow_has() {
+  allow_list=$1
+  allow_key=$2
+  while IFS= read -r allow_entry; do
+    case $allow_entry in
+      "$allow_key$TAB"*) return 0 ;;
+    esac
+  done <<<"$allow_list"
+  return 1
+}
+
 # One entry, one occurrence - see the header for why both a duplicate and a
 # stale entry are the same fail-open hole. Takes the list, the lines that
 # actually reached that list's allowlist test, and the list's name. Each rule
@@ -354,7 +383,7 @@ while IFS= read -r hit; do
   lineno=${rest%%"$TAB"*}
   norm=$(printf '%s\n' "${rest#*"$TAB"}" | awk '{ $1 = $1; print }')
   BRANCH_SEEN="${BRANCH_SEEN}${file}${TAB}${norm}${NL}"
-  if printf '%s\n' "$BRANCH_ALLOWLIST" | grep -Fq -- "${file}${TAB}${norm}${TAB}"; then
+  if allow_has "$BRANCH_ALLOWLIST" "${file}${TAB}${norm}"; then
     continue
   fi
   fail "${file}:${lineno} runs git branch, which can delete one; only $TEARDOWN may, and this is not a reviewed line:"
@@ -378,7 +407,7 @@ else
     lineno=${rest%%"$TAB"*}
     norm=$(printf '%s\n' "${rest#*"$TAB"}" | awk '{ $1 = $1; print }')
     SWEEP_SEEN="${SWEEP_SEEN}${norm}${NL}"
-    if printf '%s\n' "$SWEEP_ALLOWLIST" | grep -Fq -- "${norm}${TAB}"; then
+    if allow_has "$SWEEP_ALLOWLIST" "$norm"; then
       continue
     fi
     fail "${SWEEP}:${lineno} can destroy work - remove a branch, a worktree, or a path, or overwrite the working tree - and is not one of the startup sweep's reviewed lines:"
@@ -419,7 +448,7 @@ while IFS= read -r hit; do
 
   norm=$(printf '%s\n' "$code" | awk '{ $1 = $1; print }')
   CALL_SEEN="${CALL_SEEN}${file}${TAB}${norm}${NL}"
-  if ! printf '%s\n' "$ALLOWLIST" | grep -Fq -- "${file}${TAB}${norm}${TAB}"; then
+  if ! allow_has "$ALLOWLIST" "${file}${TAB}${norm}"; then
     fail "${file}:${lineno} reaches a destructive helper and is not in the reviewed allowlist:"
     printf '  %s\n' "$norm" >&2
     printf '  Add it to ALLOWLIST in bin/fm-destructive-automation-check.sh with a reason that says why no automatic path reaches it.\n' >&2

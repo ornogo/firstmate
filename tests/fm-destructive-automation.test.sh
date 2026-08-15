@@ -678,6 +678,50 @@ assert_contains "$out" "runs git branch, which can delete one" \
   "the failure must be rule 2's, not an unrelated one"
 pass "continuation: a comment ending in a backslash does not swallow the next command"
 
+# --- approval is keyed on the whole line, not a suffix of one ---------------
+#
+# Regression fixtures for a fail-open the allowlist tests had while membership
+# was an unanchored `grep -F` over whole entries. A hit that is merely a *suffix*
+# of a reviewed line inherited that line's approval, and suffix is the dangerous
+# direction: a reviewed line is usually longer than the bare destructive command
+# it wraps, because what makes it safe is the guard wrapped around it. Rule 3's
+# reviewed sweep checkout is safe precisely because of the `if !` its reason
+# cites, and rule 3's reviewed `rm -f` because of the same - so dropping the
+# guard leaves a suffix, and the approval written for the guarded form carried
+# over to the unguarded one. The occurrence counter did not catch it either: the
+# reviewed line is still there, still matched exactly once.
+#
+# Both payloads below passed the check unreviewed. Rules 2 and 4 key on
+# `<path><TAB><line>` and were not exploitable this way today, but only because
+# no tracked bin/ path is a suffix of another - a property of the tree, not of
+# the test - so they are anchored by the same helper without a fixture that can
+# reach them from this fork's own file list.
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+cat >> "$FIXTURE/bin/fm-fleet-sync.sh" <<'EOF'
+
+git -C "$PROJ" checkout --quiet "$DEFAULT" 2>/dev/null; then
+EOF
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=1" \
+  "an unguarded checkout must not inherit the guarded one's approval"$'\n'"--- output ---"$'\n'"$out"
+assert_contains "$out" "not one of the startup sweep's reviewed lines" \
+  "the failure must be rule 3's, not an unrelated one"
+pass "anchoring: dropping a reviewed line's guard drops its approval with it"
+
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+cat >> "$FIXTURE/bin/fm-fleet-sync.sh" <<'EOF'
+
+rm -f "$lock"; then
+EOF
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=1" \
+  "an unguarded removal must not inherit the guarded one's approval"$'\n'"--- output ---"$'\n'"$out"
+assert_contains "$out" "not one of the startup sweep's reviewed lines" \
+  "the failure must be rule 3's, not an unrelated one"
+pass "anchoring: a reviewed removal's suffix is not itself reviewed"
+
 # --- an entry licenses one occurrence ---------------------------------------
 #
 # Regression fixtures for a fail-open every allowlist had while approval was
