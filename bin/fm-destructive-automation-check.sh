@@ -353,15 +353,27 @@ fail() {
 #
 # One awk pass rather than grep, because the match is on the probe while the
 # printed record is the original line: an allowlist entry has to quote the source
-# a reviewer reads, not a stripped rewrite of it. Paths and line numbers carry
-# none of the removed characters, so the two leading fields are the same either
-# way.
+# a reviewer reads, not a stripped rewrite of it.
+#
+# The probe is the third field alone. A record is "<path><TAB><lineno><TAB><code>",
+# and matching the whole record lets one rule read half its pattern out of the
+# path: `bin/git-notes.sh` carrying `printf '%s\n' " branch "` satisfies
+# BRANCH_RE's `git` from the path and its ` branch ` from the code, and rules 2
+# and 3 have no second test - unlike rule 4, which re-checks $code in the loop -
+# so the check reports a line as running `git branch` when it runs no git at all.
+# The direction is fail-closed, but the remedy a maintainer reaches for is an
+# allowlist entry, and that entry then permanently licenses a line under a reason
+# that was never true. Fields, not characters: cutting on whitespace would eat
+# the code's first word and turn `git branch -D "$b"` into ` branch -D "$b"`,
+# which BRANCH_RE no longer matches - a miss, which is the direction this check
+# does not get to have.
 probe_filter() {
   # shellcheck disable=SC2016 # awk owns every $ expression in this literal program.
   FM_PROBE_RE=$1 awk '
     BEGIN { SQ = sprintf("%c", 39); re = ENVIRON["FM_PROBE_RE"] }
     {
       probe = $0
+      sub(/^[^\t]*\t[^\t]*\t/, "", probe)
       gsub(/"/, "", probe)
       gsub(SQ, "", probe)
       gsub(/\\/, "", probe)

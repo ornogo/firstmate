@@ -652,6 +652,46 @@ assert_contains "$out" "runs git branch, which can delete one" \
   "the failure must be rule 2's, not an unrelated one"
 pass "rule 2: a quote inside the git verb does not hide a branch deletion"
 
+# A rule reads the code, not the path it came from. Records are
+# "<path><TAB><lineno><TAB><code>", so matching the whole record let BRANCH_RE
+# take its `git` from the file name and its ` branch ` from the line, and rules 2
+# and 3 have no second test to catch that - the check reported a line as running
+# `git branch` when it ran no git at all. Fail-closed, but the remedy a
+# maintainer reaches for is an allowlist entry licensing that line forever under
+# a reason that was never true.
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+cat > "$FIXTURE/bin/git-notes-helper.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' " branch "
+EOF
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=0" \
+  "a git-named file must not lend its name to a rule matching the line"$'\n'"--- output ---"$'\n'"$out"
+pass "rule 2: the file name is not part of the line the rule reads"
+
+# The other direction of the same cut, because it is the one that can fail open:
+# trimming by whitespace instead of by TAB would eat the code's first word and
+# turn this into ` branch -D "$1"`, which BRANCH_RE no longer matches. That
+# mutant is already killed upstream of here - an over-cut also strips the first
+# word of the four lines the shipped BRANCH_ALLOWLIST licenses, so the stale-entry
+# counter fires on the unmutated tree - and this case is the paired legal/illegal
+# companion above, pinning that a git-named file gets no dispensation either way.
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+cat > "$FIXTURE/bin/git-notes-helper.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+git branch -D "$1"
+EOF
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=1" \
+  "dropping the path prefix must not drop the line's own first word"$'\n'"--- output ---"$'\n'"$out"
+assert_contains "$out" "runs git branch, which can delete one" \
+  "the failure must be rule 2's, not an unrelated one"
+pass "rule 2: a real deletion in a git-named file still fails"
+
 # Rule 3's payloads go in the startup sweep itself, which is where the rule
 # looks.
 FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
