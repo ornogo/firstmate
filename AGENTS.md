@@ -502,12 +502,12 @@ Load `secondmate-provisioning` before creating or using a charter brief and pres
 Status appends are sparse supervisor-actionable events, not routine progress; `bin/fm-classify-lib.sh` owns keyed open and resolved semantics.
 The scaffold is a safety contract, not a suggestion.
 
-## 12. Self-update
+## 12. Updates
 
 Firstmate's shared instruction surface reaches running homes only after it lands on the default branch and those homes fast-forward.
 Only `AGENTS.md`, `bin/`, and `.agents/skills/` are loaded by a running firstmate; public `skills/` is an installer-facing surface.
-When the captain invokes `/updatefirstmate` or asks to update firstmate, load the `/updatefirstmate` skill.
-It performs guarded fast-forward updates of firstmate and registered secondmate homes, refreshes instructions, and never touches anything under `projects/`.
+There is no runtime self-update path in this fork: a running firstmate never updates itself or its registered secondmates, and there is no captain-invocable update skill.
+Approved fork updates are applied out of band by the operator, or an operator-directed agent on another machine, against an explicit reviewed commit — never by the running primary.
 
 ## 13. Agent-only reference skills
 
