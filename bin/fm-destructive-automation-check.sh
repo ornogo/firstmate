@@ -204,7 +204,7 @@ SWEEP_FORBIDDEN='(^|[^[:alnum:]_.-])(rm|rmdir|unlink|shred)([[:space:]]|$)|git[^
 SWEEP_ALLOWLIST=$(
   cat <<'ENTRIES'
 if ! rm -f "$lock"; then	a single non-recursive rm -f of a provably-stale .git/packed-refs.lock, which holds no work
-git -C "$PROJ" worktree list --porcelain 2>/dev/null \	a read: it lists worktrees and removes none
+git -C "$PROJ" worktree list --porcelain 2>/dev/null | sed -n 's#^branch refs/heads/##p' | grep -Fxq -- "$DEFAULT"	a read: the whole pipeline lists worktrees and asks whether one holds the default branch, removing none
 if ! git -C "$PROJ" checkout --quiet "$DEFAULT" 2>/dev/null; then	re-attaches a detached HEAD the branch above has already proven clean, free of unique commits, and an ancestor of the base; --quiet is not --force, so git aborts rather than overwrite, and every other drift is reported and left untouched
 ENTRIES
 )
@@ -212,18 +212,21 @@ ENTRIES
 # Reviewed call sites, as "<path><TAB><normalized line><TAB><reason>".
 # Normalized means leading and trailing whitespace trimmed and internal runs
 # collapsed to one space, so reindenting a reviewed line does not churn this
-# list while changing what it does will. The reasons are load-bearing: each one
-# has to say why no automatic path reaches that site.
+# list while changing what it does will. The line is the whole logical command,
+# joined across any backslash continuations, so an entry quotes the invocation a
+# reviewer has to judge rather than whichever fragment fell on one source line.
+# The reasons are load-bearing: each one has to say why no automatic path
+# reaches that site.
 ALLOWLIST=$(
   cat <<'ENTRIES'
 bin/fm-teardown.sh	if out=$("$SCRIPT_DIR/fm-on.sh" "$ID" fm-remote-secondmate-control.sh retire "$ID" --force < /dev/null 2>&1); then rc=0; else rc=$?; fi	founder-run teardown fanning out to retire the remote half of a remote secondmate
 bin/fm-teardown.sh	if out=$("$SCRIPT_DIR/fm-on.sh" "$ID" fm-remote-secondmate-control.sh retire "$ID" < /dev/null 2>&1); then rc=0; else rc=$?; fi	the same fan-out, non-forced form
 bin/fm-teardown.sh	echo "Merge the branch into local $DEFAULT first (bin/fm-merge-local.sh after the captain approves), or push to a fork/remote, or get the captain's explicit OK to discard, then --force." >&2	error-message text naming the manual recovery command, not an invocation
-bin/fm-remote-secondmate-control.sh	"$SCRIPT_DIR/fm-teardown.sh" "$id" --force	reached only through this script's own retire verb, whose sole caller is the founder-run teardown allowlisted above
-bin/fm-remote-secondmate-control.sh	"$SCRIPT_DIR/fm-teardown.sh" "$id"	the same retire verb, non-forced form
+bin/fm-remote-secondmate-control.sh	FM_HOME="$FM_ROOT" FM_ROOT_OVERRIDE="$FM_ROOT" FM_STATE_OVERRIDE="$CONTROL_STATE" FM_DATA_OVERRIDE="$CONTROL_DATA" FM_CONFIG_OVERRIDE="$TARGET_HOME/config" FM_TEARDOWN_GUARD_DONE=1 "$SCRIPT_DIR/fm-teardown.sh" "$id" --force	reached only through this script's own retire verb, whose sole caller is the founder-run teardown allowlisted above
+bin/fm-remote-secondmate-control.sh	FM_HOME="$FM_ROOT" FM_ROOT_OVERRIDE="$FM_ROOT" FM_STATE_OVERRIDE="$CONTROL_STATE" FM_DATA_OVERRIDE="$CONTROL_DATA" FM_CONFIG_OVERRIDE="$TARGET_HOME/config" FM_TEARDOWN_GUARD_DONE=1 "$SCRIPT_DIR/fm-teardown.sh" "$id"	the same retire verb, non-forced form
 bin/fm-merge-local.sh	[ "$MODE" = local-only ] || { echo "error: task $ID is mode=$MODE, not local-only; merge PR tasks with bin/fm-pr-merge.sh <id> <PR url> after approval" >&2; exit 1; }	error-message text naming the right command for a PR task, not an invocation
 bin/fm-test-run.sh	bin/fm-teardown.sh)	test-family classification case label, matching that path as data
-bin/fm-test-run.sh	bin/fm-pr-*|bin/fm-merge-local.sh|bin/fm-review-diff.sh|\	test-family classification glob, matching those paths as data
+bin/fm-test-run.sh	bin/fm-pr-*|bin/fm-merge-local.sh|bin/fm-review-diff.sh| bin/fm-x-*|bin/fm-check*)	test-family classification glob, matching those paths as data
 bin/fm-merge-local.sh	ID=${1:?usage: fm-merge-local.sh <task-id>}	the script's own name inside its usage string, not an invocation
 ENTRIES
 )
@@ -265,30 +268,62 @@ EOF
 }
 
 # Every tracked bin/ script as "<path><TAB><lineno><TAB><code>", one executable
-# line each. Whole-line comments (the shebang among them) are dropped and
-# trailing-comment tails are cut, in one pass so the scan stays cheap.
+# command each. Whole-line comments (the shebang among them) are dropped,
+# trailing-comment tails are cut, and backslash continuations are joined, in one
+# pass so the scan stays cheap. The reported line number is the first physical
+# line of a joined run, which is where a reader would go looking.
 #
 # The tail is cut only on a line carrying neither a quote nor `${`: on such a
 # line a whitespace-preceded `#` can be neither inside a string nor inside a
 # parameter expansion's pattern, which are the only two ways it is not a
 # comment, so the cut is sound with no shell parsing. Any other line is read
 # whole. See the header for why the conservative read is the only safe one here.
+#
+# Joining is what makes the rules read commands instead of source lines. Without
+# it the scan is blind to `git -C "$PROJ" \` followed by `branch -D "$b"`, which
+# is one command to bash and two lines to grep; the same split hides a sweep
+# removal, and `fm-\` + `teardown.sh` hides a helper invocation. The join is
+# deliberately cruder than bash: every line ending in a backslash is joined to
+# the next with the backslash dropped and the next line's leading whitespace
+# kept, which is exactly how bash removes a `\<newline>`. Bash declines to join
+# in two cases this does not model - an escaped `\\` ending a line, and a
+# backslash inside a single-quoted string - and in both the crude rule joins
+# where bash would not. That direction is safe: over-joining only makes a
+# logical line longer, so it can raise a finding a human then reads, while
+# under-joining is the failure that hides a deletion and cannot happen here.
+#
+# A whole-line comment or a blank line flushes rather than continues. A
+# backslash inside a comment is inert to bash as well, and on the joined form
+# the `#` would start a comment that swallows the rest anyway, so flushing
+# agrees with bash and keeps the following line reported at its own number.
 EXEC_LINES=$(
   # shellcheck disable=SC2016 # awk owns every $ expression in this literal program.
   git ls-files -z -- 'bin/*' \
     | xargs -0 awk '
-        BEGIN { SQ = sprintf("%c", 39) }
+        function flush() {
+          if (held_line > 0) { print held_file "\t" held_line "\t" held }
+          held = ""; held_line = 0
+        }
+        BEGIN { SQ = sprintf("%c", 39); held = ""; held_line = 0 }
+        FNR == 1 { flush() }
         {
           probe = $0
           sub(/^[ \t]+/, "", probe)
-          if (probe ~ /^#/ || probe == "") next
+          if (probe ~ /^#/ || probe == "") { flush(); next }
           code = $0
           if (index(code, SQ) == 0 && index(code, "\"") == 0 && index(code, "${") == 0) {
             sub(/[ \t]#.*$/, "", code)
           }
           gsub(/\t/, " ", code)
-          print FILENAME "\t" FNR "\t" code
+          if (held_line > 0) {
+            held = held code
+          } else {
+            held_file = FILENAME; held_line = FNR; held = code
+          }
+          if (held ~ /\\$/) { sub(/\\$/, "", held); next }
+          flush()
         }
+        END { flush() }
       '
 )
 

@@ -613,6 +613,71 @@ assert_contains "$out" "reaches a destructive helper and is not in the reviewed 
   "the failure must be rule 4's, not an unrelated one"
 pass "comment cut: a hash inside a parameter expansion cannot hide a destructive call site"
 
+# --- a continuation cannot be used to split a command -----------------------
+#
+# Regression fixtures for a fail-open every action rule had while the scan read
+# physical source lines. Bash joins a line ending in a backslash to the next, so
+# one destructive command can be written as two lines that each look harmless,
+# and rules 2, 3 and 4 all passed the split forms below. The split is not exotic:
+# 93 of the fork's 140 tracked bin/ scripts already continue a line this way, so
+# a deletion written in the house style was the one the check could not see.
+
+# shellcheck disable=SC2016 # these are fixture payloads; the $ names must reach the fixture unexpanded.
+SPLIT_COMMANDS=(
+  'git -C "$PROJ" \
+  branch -D "$stale"'
+  'git -C "$PROJ" \
+  worktree remove --force "$wt"'
+  'git \
+  -C "$PROJ" \
+  reset --hard "$BASE"'
+)
+for split in "${SPLIT_COMMANDS[@]}"; do
+  FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+  printf '\n%s\n' "$split" >> "$FIXTURE/bin/fm-fleet-sync.sh"
+  git -C "$FIXTURE" add -A >/dev/null 2>&1
+  out=$(run_check "$FIXTURE")
+  assert_contains "$out" "rc=1" \
+    "a command split across lines must be read as one command:"$'\n'"$split"$'\n'"--- output ---"$'\n'"$out"
+done
+pass "continuation: splitting a destructive command across lines still fails"
+
+# The same hole one level down: the continuation can fall inside the helper's
+# own name, and inside a double-quoted string, where bash removes it just the
+# same.
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+cat >> "$FIXTURE/bin/fm-spawn.sh" <<'EOF'
+
+"$SCRIPT_DIR/fm-\
+teardown.sh" "$id" --force
+EOF
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=1" \
+  "a helper name split by a continuation must not hide the call site"$'\n'"--- output ---"$'\n'"$out"
+assert_contains "$out" "reaches a destructive helper and is not in the reviewed allowlist" \
+  "the failure must be rule 4's, not an unrelated one"
+pass "continuation: splitting a destructive helper's own name still fails"
+
+# The join's own fail-open, pinned from the other side. A backslash inside a
+# comment is inert to bash, so the command below runs; joining it into the
+# comment instead would delete it before any rule looked. This passes on both
+# sides of the fix and is not a regression fixture for it - it exists so the
+# flush cannot be dropped later as a redundant branch.
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+cat >> "$FIXTURE/bin/fm-fleet-sync.sh" <<'EOF'
+
+# about to delete the stale branch \
+git branch -D "$stale"
+EOF
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=1" \
+  "a comment ending in a backslash must not swallow the next command"$'\n'"--- output ---"$'\n'"$out"
+assert_contains "$out" "runs git branch, which can delete one" \
+  "the failure must be rule 2's, not an unrelated one"
+pass "continuation: a comment ending in a backslash does not swallow the next command"
+
 # --- an entry licenses one occurrence ---------------------------------------
 #
 # Regression fixtures for a fail-open every allowlist had while approval was
@@ -620,11 +685,15 @@ pass "comment cut: a hash inside a parameter expansion cannot hide a destructive
 # the original's approval, which is exactly what a new automatic caller looks
 # like. Rule 3's copy case is above, next to its own rule.
 
+# The copy is written on one line while the original is continued across four.
+# They are the same command, so they normalize to the same reviewed line and the
+# count catches the copy: approval attaches to the invocation, not to the layout
+# someone happened to give it.
 FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
 cat >> "$FIXTURE/bin/fm-remote-secondmate-control.sh" <<'EOF'
 
 auto_reaper() {
-  "$SCRIPT_DIR/fm-teardown.sh" "$id" --force
+  FM_HOME="$FM_ROOT" FM_ROOT_OVERRIDE="$FM_ROOT" FM_STATE_OVERRIDE="$CONTROL_STATE" FM_DATA_OVERRIDE="$CONTROL_DATA" FM_CONFIG_OVERRIDE="$TARGET_HOME/config" FM_TEARDOWN_GUARD_DONE=1 "$SCRIPT_DIR/fm-teardown.sh" "$id" --force
 }
 EOF
 git -C "$FIXTURE" add -A >/dev/null 2>&1
