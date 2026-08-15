@@ -21,13 +21,22 @@
 #
 #   1. prune_gone_branches does not exist anywhere in the fork.
 #   2. Local-branch deletion appears only in founder-run bin/fm-teardown.sh.
-#   3. The startup sweep (bin/fm-fleet-sync.sh) deletes no branch, no worktree,
-#      and no directory tree.
+#   3. The startup sweep (bin/fm-fleet-sync.sh) runs nothing removal-capable
+#      except its two reviewed lines.
 #   4. Every executable-position reference to a destructive helper anywhere in
 #      tracked bin/ is in the reviewed allowlist below. A new call site - which
 #      is what "a new automatic caller" looks like in the diff - is not in the
 #      allowlist, so it fails. Rule 4 is the general one; rules 1-3 pin the
 #      specific surfaces this fork had to remove.
+#
+# Rules 2 and 3 match the ACTION, not one spelling of it. A check that listed
+# the spellings would pass on `rm --recursive`, `git branch -df`,
+# `git branch --force --delete`, and `git worktree --force remove` - the same
+# deletions written the other legal way - which is a fail-open hole in a check
+# whose whole premise is fail-closed. Rule 2 therefore reads a git branch
+# invocation's entire option run before deciding, and rule 3 is inverted: it
+# flags every removal-capable verb and requires each one to be a reviewed line,
+# so a spelling nobody anticipated fails by default instead of passing.
 #
 # Prose is out of scope. Rules 2-4 read only executable lines: a whole-line
 # comment, and the tail of a "code  # trailing comment" line, are stripped
@@ -88,12 +97,28 @@ SELF_TEST=tests/fm-destructive-automation.test.sh
 # executable position is a call site until the allowlist says otherwise.
 DESTRUCTIVE_RE='fm-teardown\.sh|fm-pr-merge\.sh|fm-merge-local\.sh|fm-remote-secondmate-control\.sh retire'
 
-BRANCH_DELETE_RE='branch[[:space:]]+(-D|-d|--delete)([[:space:]]|$)'
+# "branch", then its whole option run, then a delete option in any form git
+# accepts: -d, -D, a cluster carrying either (-df), or --delete, in any order
+# relative to the other options (--force --delete, --force -D). Read-only forms
+# carry no d/D option and do not match: -r, -a, -vv, --list, --show-current.
+BRANCH_DELETE_RE='branch[[:space:]]+(-[^[:space:]]+[[:space:]]+)*(--delete([[:space:]]|=|$)|-[[:alnum:]]*[dD])'
 
-# A provably-stale .git/packed-refs.lock is the sweep's one permitted removal:
-# a single non-recursive rm -f of a lock file, which holds no work. Everything
-# below would.
-SWEEP_FORBIDDEN='branch[[:space:]]+(-D|-d|--delete)|worktree[[:space:]]+(remove|prune)|(^|[^[:alnum:]_-])rm[[:space:]]+(-[[:alnum:]]*[rR][[:alnum:]]*)([[:space:]]|$)'
+# Rule 3 inverted: every removal-capable verb reaching the sweep, whatever its
+# options, so the reviewed lines below are the only ones that may run. Matching
+# the verb rather than the invocation is what makes an unanticipated spelling
+# fail closed. "--prune" on git fetch is deliberately not matched: it drops
+# remote-tracking refs, which hold no work.
+SWEEP_FORBIDDEN='(^|[^[:alnum:]_./-])(rm|rmdir|unlink|shred)([[:space:]]|$)|git[^;|&]*[[:space:]](branch|worktree|clean|gc|prune|reflog)([[:space:]]|$)|-delete([[:space:]]|$)|-exec[[:space:]]+rm'
+
+# The sweep's reviewed lines, as "<normalized line><TAB><reason>", normalized
+# the same way as ALLOWLIST below. Both reasons have to hold for the sweep's
+# unattended context: nothing here may destroy work.
+SWEEP_ALLOWLIST=$(
+  cat <<'ENTRIES'
+if ! rm -f "$lock"; then	a single non-recursive rm -f of a provably-stale .git/packed-refs.lock, which holds no work
+git -C "$PROJ" worktree list --porcelain 2>/dev/null \	a read: it lists worktrees and removes none
+ENTRIES
+)
 
 # Reviewed call sites, as "<path><TAB><normalized line><TAB><reason>".
 # Normalized means leading and trailing whitespace trimmed and internal runs
@@ -172,8 +197,14 @@ else
   while IFS= read -r hit; do
     [ -n "$hit" ] || continue
     rest=${hit#*"$TAB"}
-    fail "${SWEEP}:${rest%%"$TAB"*} deletes a branch, a worktree, or a directory tree; the startup sweep must not:"
-    printf '  %s\n' "${rest#*"$TAB"}" >&2
+    lineno=${rest%%"$TAB"*}
+    norm=$(printf '%s\n' "${rest#*"$TAB"}" | awk '{ $1 = $1; print }')
+    if printf '%s\n' "$SWEEP_ALLOWLIST" | grep -Fq -- "${norm}${TAB}"; then
+      continue
+    fi
+    fail "${SWEEP}:${lineno} can remove a branch, a worktree, or a path, and is not one of the startup sweep's reviewed lines:"
+    printf '  %s\n' "$norm" >&2
+    printf '  The startup sweep runs unattended on every boot. Remove it, or add it to SWEEP_ALLOWLIST in bin/fm-destructive-automation-check.sh with a reason that says why it cannot destroy work.\n' >&2
   done <<EOF
 $(printf '%s\n' "$EXEC_LINES" | grep -E -- "^${SWEEP}${TAB}" | grep -E -- "$SWEEP_FORBIDDEN" || true)
 EOF
@@ -192,9 +223,13 @@ while IFS= read -r hit; do
   code=${rest#*"$TAB"}
 
   # A script naming only itself - usage text, a self-exec - calls nothing.
+  # Matched in-shell rather than through grep: the pre-filter passes every line
+  # that names a destructive helper at all, which is ~2250 lines of the fork's
+  # own usage and error text, and one subshell each was this check's entire
+  # runtime.
   self=${file##*/}
   others=${code//"$self"/}
-  printf '%s\n' "$others" | grep -Eq -- "$DESTRUCTIVE_RE" || continue
+  [[ $others =~ $DESTRUCTIVE_RE ]] || continue
 
   norm=$(printf '%s\n' "$code" | awk '{ $1 = $1; print }')
   if ! printf '%s\n' "$ALLOWLIST" | grep -Fq -- "${file}${TAB}${norm}${TAB}"; then
@@ -214,4 +249,6 @@ if [ "$FAILURES" -ne 0 ]; then
 fi
 
 REVIEWED=$(printf '%s\n' "$ALLOWLIST" | grep -c . || true)
-printf 'fm-destructive-automation-check: ok scripts=%s reviewed_call_sites=%s\n' "$SCANNED" "$REVIEWED"
+SWEEP_REVIEWED=$(printf '%s\n' "$SWEEP_ALLOWLIST" | grep -c . || true)
+printf 'fm-destructive-automation-check: ok scripts=%s reviewed_call_sites=%s reviewed_sweep_lines=%s\n' \
+  "$SCANNED" "$REVIEWED" "$SWEEP_REVIEWED"

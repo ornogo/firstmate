@@ -19,20 +19,30 @@ CHECK="$ROOT/bin/fm-destructive-automation-check.sh"
 # bin_fixture: a fresh git repo holding a copy of this repo's tracked bin/
 # files. Copying rather than synthesizing keeps the real reviewed allowlist in
 # play, so a mutation is measured against the same lines the check ships with.
+# One fixture per mutation, and there are two dozen mutations, so the first
+# call builds a template and the rest copy it wholesale. Re-running git init
+# and a 140-file add per fixture dominated this test's runtime.
+FIXTURE_TEMPLATE=""
+
 bin_fixture() {
   local root repo f dir
+  if [ -z "$FIXTURE_TEMPLATE" ]; then
+    root=$(fm_test_tmproot fm-destructive-automation-template) || return 1
+    repo="$root/repo"
+    mkdir -p "$repo" || return 1
+    git -C "$repo" init -q || return 1
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      dir=$(dirname "$f")
+      mkdir -p "$repo/$dir" || return 1
+      cp "$ROOT/$f" "$repo/$f" || return 1
+    done < <(git -C "$ROOT" ls-files -- 'bin/*')
+    git -C "$repo" add -A >/dev/null 2>&1 || return 1
+    FIXTURE_TEMPLATE=$repo
+  fi
   root=$(fm_test_tmproot fm-destructive-automation) || return 1
-  repo="$root/repo"
-  mkdir -p "$repo" || return 1
-  git -C "$repo" init -q || return 1
-  while IFS= read -r f; do
-    [ -n "$f" ] || continue
-    dir=$(dirname "$f")
-    mkdir -p "$repo/$dir" || return 1
-    cp "$ROOT/$f" "$repo/$f" || return 1
-  done < <(git -C "$ROOT" ls-files -- 'bin/*')
-  git -C "$repo" add -A >/dev/null 2>&1 || return 1
-  printf '%s\n' "$repo"
+  cp -R "$FIXTURE_TEMPLATE" "$root/repo" || return 1
+  printf '%s\n' "$root/repo"
 }
 
 # run_check <repo>: stdout+stderr of the check over <repo>, with its exit code
@@ -134,6 +144,51 @@ assert_contains "$out" "deletes a local branch; only bin/fm-teardown.sh may" \
 assert_contains "$out" "bin/fm-bootstrap.sh:" "the failure must name the offending file"
 pass "rule 2: deleting a local branch outside founder-run teardown fails"
 
+# `git branch -D` is one spelling of branch deletion, not the definition of it.
+# A rule that recognized only the spellings the fork happens to use today would
+# pass on the identical deletion written the other legal way, which is a
+# fail-open hole in a fail-closed check. Each of these is a real git invocation
+# that deletes a local branch, and each must fail on its own.
+# shellcheck disable=SC2016 # These are source lines written into a fixture, not commands this test runs.
+BRANCH_SPELLINGS=(
+  'git -C "$PROJ" branch -df "$stale"'
+  'git -C "$PROJ" branch --force --delete "$stale"'
+  'git -C "$PROJ" branch --force -D "$stale"'
+  'git -C "$PROJ" branch -d --force "$stale"'
+  'git -C "$PROJ" branch --delete "$stale"'
+)
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+printf '\n' >> "$FIXTURE/bin/fm-bootstrap.sh"
+printf '%s\n' "${BRANCH_SPELLINGS[@]}" >> "$FIXTURE/bin/fm-bootstrap.sh"
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=1" \
+  "branch deletion in any option form must fail"$'\n'"--- output ---"$'\n'"$out"
+# The check reports every finding, so one run says which spellings it caught -
+# and, by omission, which one it would have let through.
+for spelling in "${BRANCH_SPELLINGS[@]}"; do
+  assert_contains "$out" "$spelling" \
+    "branch deletion written as \`$spelling\` must be caught like any other spelling"$'\n'"--- output ---"$'\n'"$out"
+done
+pass "rule 2: every option form that deletes a branch fails, not just -D"
+
+# The other half of matching the action rather than a spelling: reading branches
+# must stay legal. Without this, "recognize every delete option" could quietly
+# widen into "flag every git branch invocation", and the first read-only caller
+# would silence the rule.
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+cat >> "$FIXTURE/bin/fm-bootstrap.sh" <<'EOF'
+
+git -C "$PROJ" branch --show-current
+git -C "$PROJ" branch -r --list "origin/*"
+git -C "$PROJ" branch -vv --sort=-committerdate
+EOF
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=0" \
+  "read-only git branch invocations must stay legal outside teardown"$'\n'"--- output ---"$'\n'"$out"
+pass "rule 2: reading branches stays legal; only deleting them is scoped"
+
 # The same deletion inside teardown is the sanctioned path and must stay legal,
 # or rule 2 would just be banning branch deletion outright.
 FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
@@ -177,8 +232,8 @@ EOF
 git -C "$FIXTURE" add -A >/dev/null 2>&1
 out=$(run_check "$FIXTURE")
 assert_contains "$out" "rc=1" "removing a worktree from the startup sweep must fail the check"
-assert_contains "$out" "the startup sweep must not" \
-  "the failure must say the startup sweep may not delete"
+assert_contains "$out" "The startup sweep runs unattended on every boot" \
+  "the failure must say why the startup sweep is held to this rule"
 pass "rule 3: removing a worktree from the startup sweep fails"
 
 FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
@@ -189,12 +244,43 @@ EOF
 git -C "$FIXTURE" add -A >/dev/null 2>&1
 out=$(run_check "$FIXTURE")
 assert_contains "$out" "rc=1" "a recursive removal in the startup sweep must fail the check"
-assert_contains "$out" "directory tree" "the failure must name the tree removal"
+# shellcheck disable=SC2016 # The expected text is the fixture's source line, not an expansion.
+assert_contains "$out" 'rm -rf "$PROJ/.git/rebase-merge"' \
+  "the failure must quote the offending line"
 pass "rule 3: a recursive removal in the startup sweep fails"
 
+# Rule 3 is inverted, so it must catch removals nobody thought to enumerate.
+# Each of these is the same deletion as a case above, written the other legal
+# way; a rule that listed spellings would pass every one of them.
+# shellcheck disable=SC2016 # These are source lines written into a fixture, not commands this test runs.
+SWEEP_SPELLINGS=(
+  'rm --recursive --force "$PROJ/.git/rebase-merge"'
+  'git -C "$PROJ" worktree --force remove "$wt"'
+  'git -C "$PROJ" worktree prune'
+  'git -C "$PROJ" clean -xfd'
+  'find "$PROJ/.git" -name "*.lock" -delete'
+  'find "$PROJ" -type d -exec rm -rf {} +'
+  'rmdir "$PROJ/.git/worktrees/$wt"'
+)
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+printf '\n' >> "$FIXTURE/bin/fm-fleet-sync.sh"
+printf '%s\n' "${SWEEP_SPELLINGS[@]}" >> "$FIXTURE/bin/fm-fleet-sync.sh"
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=1" \
+  "removals in the startup sweep must fail"$'\n'"--- output ---"$'\n'"$out"
+assert_contains "$out" "not one of the startup sweep's reviewed lines" \
+  "the failure must say the line is unreviewed"
+for spelling in "${SWEEP_SPELLINGS[@]}"; do
+  assert_contains "$out" "$spelling" \
+    "\`$spelling\` in the startup sweep must be caught"$'\n'"--- output ---"$'\n'"$out"
+done
+pass "rule 3: every removal-capable spelling in the startup sweep fails"
+
 # The sweep's one permitted removal is a provably-stale packed-refs lock: a
-# single non-recursive rm -f of a lock file, holding no work. Rule 3 has to
-# leave it alone or the sweep could not recover from an orphaned lock at all.
+# single non-recursive rm -f of a lock file, holding no work. It is permitted as
+# that exact reviewed line, not as a class - "any rm -f is fine here" is how the
+# next unattended deletion arrives wearing a safe-looking flag.
 FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
 cat >> "$FIXTURE/bin/fm-fleet-sync.sh" <<'EOF'
 
@@ -202,9 +288,24 @@ rm -f "$another_lock"
 EOF
 git -C "$FIXTURE" add -A >/dev/null 2>&1
 out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=1" \
+  "a new unreviewed rm in the startup sweep must fail even in a non-recursive form"$'\n'"--- output ---"$'\n'"$out"
+pass "rule 3: the reviewed removal is a line, not a licence for the verb"
+
+# The reviewed line itself has to stay legal, or the sweep could not recover
+# from an orphaned lock at all and rule 3 would be banning the action outright.
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+cat >> "$FIXTURE/bin/fm-fleet-sync.sh" <<'EOF'
+
+      if ! rm -f "$lock"; then
+        echo "could not clear the stale lock" >&2
+      fi
+EOF
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
 assert_contains "$out" "rc=0" \
-  "a non-recursive lock-file removal must stay legal in the startup sweep"$'\n'"--- output ---"$'\n'"$out"
-pass "rule 3: a non-recursive lock-file removal stays legal"
+  "the sweep's reviewed lock removal must stay legal"$'\n'"--- output ---"$'\n'"$out"
+pass "rule 3: the reviewed stale-lock removal stays legal"
 
 # --- rule 4: every destructive call site is reviewed ------------------------
 
