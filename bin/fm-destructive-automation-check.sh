@@ -20,7 +20,8 @@
 # Four rules, all fail-closed:
 #
 #   1. prune_gone_branches does not exist anywhere in the fork.
-#   2. Local-branch deletion appears only in founder-run bin/fm-teardown.sh.
+#   2. `git branch` runs only in founder-run bin/fm-teardown.sh, or on a
+#      reviewed line.
 #   3. The startup sweep (bin/fm-fleet-sync.sh) runs nothing removal-capable
 #      except its two reviewed lines.
 #   4. Every executable-position reference to a destructive helper anywhere in
@@ -29,14 +30,26 @@
 #      allowlist, so it fails. Rule 4 is the general one; rules 1-3 pin the
 #      specific surfaces this fork had to remove.
 #
-# Rules 2 and 3 match the ACTION, not one spelling of it. A check that listed
-# the spellings would pass on `rm --recursive`, `git branch -df`,
-# `git branch --force --delete`, and `git worktree --force remove` - the same
-# deletions written the other legal way - which is a fail-open hole in a check
-# whose whole premise is fail-closed. Rule 2 therefore reads a git branch
-# invocation's entire option run before deciding, and rule 3 is inverted: it
-# flags every removal-capable verb and requires each one to be a reviewed line,
-# so a spelling nobody anticipated fails by default instead of passing.
+# Rules 2 and 3 match the ACTION, not one spelling of it, and both are inverted
+# for the same reason. A check that listed spellings would pass on
+# `rm --recursive`, `git branch -df`, `git branch --force --delete`, and
+# `git worktree --force remove` - the same deletions written the other legal
+# way - which is a fail-open hole in a check whose whole premise is fail-closed.
+#
+# Recognizing more spellings does not fix that, because the thing being modelled
+# is git's option grammar, and it loses: `git branch --sort committerdate -D b`
+# deletes the branch and exits 0, but any pattern that walks an option run
+# stops at `committerdate`, which does not begin with a hyphen. Rules 2 and 3
+# therefore flag the VERB - every `git branch` invocation, every removal-capable
+# command in the startup sweep - and require each one to be a reviewed line in
+# an allowlist. A spelling nobody anticipated fails by default instead of
+# passing, and no git grammar has to be modelled to keep that true.
+#
+# The cost is that a read-only `git branch` outside teardown needs a reviewed
+# line too, and so does prose that merely reads like one. That cost is one line
+# today, and it is the right trade: a reviewer adding an entry has to say why
+# the line cannot delete a branch, which is the question the check exists to
+# force.
 #
 # Prose is out of scope. Rules 2-4 read only executable lines: a whole-line
 # comment, and the tail of a "code  # trailing comment" line, are stripped
@@ -46,15 +59,23 @@
 # Two files are the contract's own text rather than code it governs: this
 # script, and tests/fm-destructive-automation.test.sh. Both have to name the
 # banned function and the destructive helpers in order to ban them and to prove
-# the ban works, so rule 1 skips both by path and rule 4 skips this script. The
-# banned name therefore appears nowhere in this fork except in the check that
-# bans it and the test that proves the ban. The exclusion is by exact path, not
-# by wording: the same words in any other file still fail.
+# the ban works, so rule 1 skips both by path, and rules 2 and 4 skip this
+# script. The banned name therefore appears nowhere in this fork except in the
+# check that bans it and the test that proves the ban. The exclusion is by exact
+# path, not by wording: the same words in any other file still fail.
 #
-# What that costs, stated plainly: rule 4 does not audit this script's own call
-# sites, so a change to either file is reviewed as a change to the rule, not as
-# ordinary code. Rule 2 still covers this script, so branch deletion added here
-# is still caught.
+# Rules 2 and 4 skip this script for a sharper reason than "it names what it
+# bans": an allowlist cannot license a line in the file that stores the licence.
+# The entry has to quote the line it exempts, so the record is itself a hit, and
+# adding an entry for that record does not help - the new entry is one too.
+# There is no fixed point. Rule 3 escapes it only because it is scoped to the
+# sweep file, so this script's copies of the sweep's reviewed lines are never
+# scanned.
+#
+# What that costs, stated plainly: no rule audits this script's own call sites,
+# so a change to either file is reviewed as a change to the rule, not as
+# ordinary code. That is the compensating control, and it is the reason the
+# reasons in every allowlist below are load-bearing prose rather than a token.
 set -eu
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -97,11 +118,22 @@ SELF_TEST=tests/fm-destructive-automation.test.sh
 # executable position is a call site until the allowlist says otherwise.
 DESTRUCTIVE_RE='fm-teardown\.sh|fm-pr-merge\.sh|fm-merge-local\.sh|fm-remote-secondmate-control\.sh retire'
 
-# "branch", then its whole option run, then a delete option in any form git
-# accepts: -d, -D, a cluster carrying either (-df), or --delete, in any order
-# relative to the other options (--force --delete, --force -D). Read-only forms
-# carry no d/D option and do not match: -r, -a, -vv, --list, --show-current.
-BRANCH_DELETE_RE='branch[[:space:]]+(-[^[:space:]]+[[:space:]]+)*(--delete([[:space:]]|=|$)|-[[:alnum:]]*[dD])'
+# Rule 2 inverted: every `git branch` invocation, whatever its options. Matching
+# the verb rather than a delete option is what makes an unanticipated spelling
+# fail closed - see the header on why reading the option run cannot be made
+# correct.
+BRANCH_RE='git[^;|&]*[[:space:]]branch([[:space:]]|$)'
+
+# Lines outside teardown that read as a `git branch` invocation and have been
+# read and found not to delete anything, as "<path><TAB><normalized line><TAB>
+# <reason>", normalized the same way as ALLOWLIST below. Tracked bin/ has
+# exactly two real `git branch` invocations and both are the sanctioned
+# deletions in bin/fm-teardown.sh, so the one entry here is prose.
+BRANCH_ALLOWLIST=$(
+  cat <<'ENTRIES'
+bin/fm-bootstrap.sh	echo "TANGLE: primary checkout on feature branch '$tangle_branch' (expected '$tangle_default'); the work is safe on that ref - restore the primary with: git -C $FM_ROOT checkout $tangle_default, then re-validate the branch in a proper worktree"	one echo whose text happens to put the word "branch" after a `git checkout` suggestion; it runs no git command
+ENTRIES
+)
 
 # Rule 3 inverted: every removal-capable verb reaching the sweep, whatever its
 # options, so the reviewed lines below are the only ones that may run. Matching
@@ -135,6 +167,7 @@ bin/fm-remote-secondmate-control.sh	"$SCRIPT_DIR/fm-teardown.sh" "$id"	the same 
 bin/fm-merge-local.sh	[ "$MODE" = local-only ] || { echo "error: task $ID is mode=$MODE, not local-only; merge PR tasks with bin/fm-pr-merge.sh <id> <PR url> after approval" >&2; exit 1; }	error-message text naming the right command for a PR task, not an invocation
 bin/fm-test-run.sh	bin/fm-teardown.sh)	test-family classification case label, matching that path as data
 bin/fm-test-run.sh	bin/fm-pr-*|bin/fm-merge-local.sh|bin/fm-review-diff.sh|\	test-family classification glob, matching those paths as data
+bin/fm-merge-local.sh	ID=${1:?usage: fm-merge-local.sh <task-id>}	the script's own name inside its usage string, not an invocation
 ENTRIES
 )
 
@@ -182,11 +215,22 @@ while IFS= read -r hit; do
   [ -n "$hit" ] || continue
   file=${hit%%"$TAB"*}
   [ "$file" != "$TEARDOWN" ] || continue
+  # An allowlist cannot license a line in the file that stores the licence: the
+  # entry quotes the line it exempts, so the record is itself a hit, and adding
+  # an entry for that record does not help because the new entry is one too.
+  # Rule 4 skips this script for the same reason. See the header.
+  [ "$file" != "$SELF" ] || continue
   rest=${hit#*"$TAB"}
-  fail "${file}:${rest%%"$TAB"*} deletes a local branch; only $TEARDOWN may:"
-  printf '  %s\n' "${rest#*"$TAB"}" >&2
+  lineno=${rest%%"$TAB"*}
+  norm=$(printf '%s\n' "${rest#*"$TAB"}" | awk '{ $1 = $1; print }')
+  if printf '%s\n' "$BRANCH_ALLOWLIST" | grep -Fq -- "${file}${TAB}${norm}${TAB}"; then
+    continue
+  fi
+  fail "${file}:${lineno} runs git branch, which can delete one; only $TEARDOWN may, and this is not a reviewed line:"
+  printf '  %s\n' "$norm" >&2
+  printf '  If it cannot delete a branch, add it to BRANCH_ALLOWLIST in bin/fm-destructive-automation-check.sh with a reason that says why.\n' >&2
 done <<EOF
-$(printf '%s\n' "$EXEC_LINES" | grep -E -- "$BRANCH_DELETE_RE" || true)
+$(printf '%s\n' "$EXEC_LINES" | grep -E -- "$BRANCH_RE" || true)
 EOF
 
 # --- rule 3: the startup sweep never deletes --------------------------------
@@ -222,14 +266,18 @@ while IFS= read -r hit; do
   lineno=${rest%%"$TAB"*}
   code=${rest#*"$TAB"}
 
-  # A script naming only itself - usage text, a self-exec - calls nothing.
+  # Deliberately matched against the whole line, including a script's own name.
+  # Stripping the self-name first would have been a hole: it rewrites
+  # `fm-remote-secondmate-control.sh retire "$id"` into ` retire "$id"`, which
+  # DESTRUCTIVE_RE no longer matches, so that script re-invoking its own retire
+  # verb passed unreviewed. A script naming itself in usage text is the rarer
+  # case and belongs in ALLOWLIST, where it is read once and recorded.
+  #
   # Matched in-shell rather than through grep: the pre-filter passes every line
   # that names a destructive helper at all, which is ~2250 lines of the fork's
   # own usage and error text, and one subshell each was this check's entire
   # runtime.
-  self=${file##*/}
-  others=${code//"$self"/}
-  [[ $others =~ $DESTRUCTIVE_RE ]] || continue
+  [[ $code =~ $DESTRUCTIVE_RE ]] || continue
 
   norm=$(printf '%s\n' "$code" | awk '{ $1 = $1; print }')
   if ! printf '%s\n' "$ALLOWLIST" | grep -Fq -- "${file}${TAB}${norm}${TAB}"; then
@@ -250,5 +298,6 @@ fi
 
 REVIEWED=$(printf '%s\n' "$ALLOWLIST" | grep -c . || true)
 SWEEP_REVIEWED=$(printf '%s\n' "$SWEEP_ALLOWLIST" | grep -c . || true)
-printf 'fm-destructive-automation-check: ok scripts=%s reviewed_call_sites=%s reviewed_sweep_lines=%s\n' \
-  "$SCANNED" "$REVIEWED" "$SWEEP_REVIEWED"
+BRANCH_REVIEWED=$(printf '%s\n' "$BRANCH_ALLOWLIST" | grep -c . || true)
+printf 'fm-destructive-automation-check: ok scripts=%s reviewed_call_sites=%s reviewed_branch_lines=%s reviewed_sweep_lines=%s\n' \
+  "$SCANNED" "$REVIEWED" "$BRANCH_REVIEWED" "$SWEEP_REVIEWED"

@@ -396,7 +396,7 @@ tests/fm-claude-stop-autoarm-live-e2e.test.sh 19
 tests/fm-claude-stop-autoarm.test.sh 60521
 tests/fm-codex-continuity-live-e2e.test.sh 19
 tests/fm-daemon.test.sh 15140
-tests/fm-destructive-automation.test.sh 25337
+tests/fm-destructive-automation.test.sh 29280
 tests/fm-documentation-audiences.test.sh 572
 tests/fm-fleet-snapshot-view.test.sh 5902
 tests/fm-fleet-sync.test.sh 16417
@@ -902,6 +902,11 @@ families_for_changed_path() {
     bin/fm-config-inherit-lib.sh|bin/fm-config-push.sh|bin/fm-shared*|\
     bin/fm-stow-cascade.sh)
       printf '%s\n' secondmate
+      ;;
+    bin/fm-destructive-automation-check.sh)
+      # The contract itself. Its own test is the only thing that proves a rule
+      # still enforces what it claims, so editing it must run that test.
+      printf '%s\n' pure-contract-unit
       ;;
     bin/fm-fleet-sync.sh)
       printf '%s\n' session-bootstrap

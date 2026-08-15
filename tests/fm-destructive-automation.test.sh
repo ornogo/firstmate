@@ -139,7 +139,7 @@ EOF
 git -C "$FIXTURE" add -A >/dev/null 2>&1
 out=$(run_check "$FIXTURE")
 assert_contains "$out" "rc=1" "deleting a branch outside teardown must fail the check"
-assert_contains "$out" "deletes a local branch; only bin/fm-teardown.sh may" \
+assert_contains "$out" "runs git branch, which can delete one; only bin/fm-teardown.sh may" \
   "the failure must name the one sanctioned home for branch deletion"
 assert_contains "$out" "bin/fm-bootstrap.sh:" "the failure must name the offending file"
 pass "rule 2: deleting a local branch outside founder-run teardown fails"
@@ -149,6 +149,12 @@ pass "rule 2: deleting a local branch outside founder-run teardown fails"
 # pass on the identical deletion written the other legal way, which is a
 # fail-open hole in a fail-closed check. Each of these is a real git invocation
 # that deletes a local branch, and each must fail on its own.
+#
+# The last two are why rule 2 flags the verb instead of reading the option run.
+# `--sort` and `--format` take a space-separated argument, so the option run is
+# `--sort committerdate -D`, and any pattern that walks it stops at
+# `committerdate`, which does not begin with a hyphen. Both were verified
+# against real git (2.50.1): each prints "Deleted branch" and exits 0.
 # shellcheck disable=SC2016 # These are source lines written into a fixture, not commands this test runs.
 BRANCH_SPELLINGS=(
   'git -C "$PROJ" branch -df "$stale"'
@@ -156,6 +162,8 @@ BRANCH_SPELLINGS=(
   'git -C "$PROJ" branch --force -D "$stale"'
   'git -C "$PROJ" branch -d --force "$stale"'
   'git -C "$PROJ" branch --delete "$stale"'
+  'git -C "$PROJ" branch --sort committerdate -D "$stale"'
+  'git -C "$PROJ" branch --format "%(refname)" -D "$stale"'
 )
 FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
 printf '\n' >> "$FIXTURE/bin/fm-bootstrap.sh"
@@ -172,22 +180,43 @@ for spelling in "${BRANCH_SPELLINGS[@]}"; do
 done
 pass "rule 2: every option form that deletes a branch fails, not just -D"
 
-# The other half of matching the action rather than a spelling: reading branches
-# must stay legal. Without this, "recognize every delete option" could quietly
-# widen into "flag every git branch invocation", and the first read-only caller
-# would silence the rule.
+# The stated cost of flagging the verb: a read-only `git branch` outside
+# teardown needs a reviewed line too. That is the trade, so it has to be the
+# tested behaviour rather than an aspiration - a check that quietly let
+# read-only forms through would be reading the option run again, with the hole
+# that comes with it. The failure has to say what to do about it, because a
+# reviewer meeting this for the first time is the whole audience for the rule.
 FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
 cat >> "$FIXTURE/bin/fm-bootstrap.sh" <<'EOF'
 
 git -C "$PROJ" branch --show-current
-git -C "$PROJ" branch -r --list "origin/*"
-git -C "$PROJ" branch -vv --sort=-committerdate
 EOF
 git -C "$FIXTURE" add -A >/dev/null 2>&1
 out=$(run_check "$FIXTURE")
-assert_contains "$out" "rc=0" \
-  "read-only git branch invocations must stay legal outside teardown"$'\n'"--- output ---"$'\n'"$out"
-pass "rule 2: reading branches stays legal; only deleting them is scoped"
+assert_contains "$out" "rc=1" \
+  "an unreviewed git branch invocation must fail even when it only reads"$'\n'"--- output ---"$'\n'"$out"
+assert_contains "$out" "add it to BRANCH_ALLOWLIST" \
+  "the failure must tell the reviewer how to license a line that cannot delete"
+pass "rule 2: a read-only git branch still needs a reviewed line"
+
+# And the allowlist has to actually license one, or the rule is unusable and the
+# next reviewer weakens it instead. The shipped tree carries exactly one entry -
+# an fm-bootstrap.sh echo whose text puts "branch" after a `git checkout`
+# suggestion - so a clean fixture passing is that entry doing its job. Keyed per
+# line, not per file: a real deletion added to the same file still fails.
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "reviewed_branch_lines=1" \
+  "the shipped tree must license its one reviewed branch line, not zero"$'\n'"--- output ---"$'\n'"$out"
+cat >> "$FIXTURE/bin/fm-bootstrap.sh" <<'EOF'
+
+git -C "$PROJ" branch -D -- "$stale"
+EOF
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=1" \
+  "the branch allowlist must license a line, not the file holding it"$'\n'"--- output ---"$'\n'"$out"
+pass "rule 2: the branch allowlist licenses a line, not a whole file"
 
 # The same deletion inside teardown is the sanctioned path and must stay legal,
 # or rule 2 would just be banning branch deletion outright.
@@ -202,11 +231,16 @@ assert_contains "$out" "rc=0" \
   "founder-run teardown must still be allowed to delete a branch"$'\n'"--- output ---"$'\n'"$out"
 pass "rule 2: founder-run teardown may still delete a branch"
 
-# Rules 1 and 4 skip the check's own source because it has to name what it
-# bans. That exemption is narrow on purpose: rule 2 names no helper, so nothing
-# about it is self-referential and the check stays under it like any other
-# script. Without this case, "skip the check's own file" could quietly widen
-# into "the check audits everything but itself".
+# Rule 2 skips the check's own source, and the reason is structural rather than
+# a convenience: BRANCH_ALLOWLIST stores each exemption by quoting the line it
+# exempts, so every entry is itself a `git branch` line in this file, and an
+# entry licensing that entry would be one too. There is no fixed point, so the
+# file holding the licences cannot be audited by the rule they license.
+#
+# That exemption has to stay narrow, which is what this case pins: it is by
+# exact path, not by wording. The identical line in any other bin/ script still
+# fails, so "skip the file that stores the allowlist" cannot widen into "skip
+# anything that looks like the check".
 FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
 cat >> "$FIXTURE/bin/fm-destructive-automation-check.sh" <<'EOF'
 
@@ -214,10 +248,22 @@ git -C "$PROJ" branch -D -- "$stale"
 EOF
 git -C "$FIXTURE" add -A >/dev/null 2>&1
 out=$(run_check "$FIXTURE")
-assert_contains "$out" "rc=1" "the check must not be exempt from the branch-deletion rule"
-assert_contains "$out" "bin/fm-destructive-automation-check.sh:" \
-  "the failure must name the check's own source"
-pass "rule 2: the check audits its own source too"
+assert_contains "$out" "rc=0" \
+  "rule 2 must skip the file that stores its own allowlist"$'\n'"--- output ---"$'\n'"$out"
+
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+cp "$FIXTURE/bin/fm-destructive-automation-check.sh" "$FIXTURE/bin/fm-copy-of-the-check.sh"
+cat >> "$FIXTURE/bin/fm-copy-of-the-check.sh" <<'EOF'
+
+git -C "$PROJ" branch -D -- "$stale"
+EOF
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=1" \
+  "the exemption must be the path, not the file's contents"$'\n'"--- output ---"$'\n'"$out"
+assert_contains "$out" "bin/fm-copy-of-the-check.sh:" \
+  "the failure must name the copy, which is not the exempt path"
+pass "rule 2: the exclusion is by exact path, not by wording"
 
 # --- rule 3: the startup sweep deletes nothing ------------------------------
 #
@@ -350,6 +396,28 @@ out=$(run_check "$FIXTURE")
 assert_contains "$out" "rc=1" "a watcher reaching a merge helper must fail the check"
 assert_contains "$out" "bin/fm-watch.sh:" "the failure must name the watcher"
 pass "rule 4: a watcher reaching a merge helper fails"
+
+# A script re-invoking its own destructive verb is a real call site and must be
+# caught like any other. This is a regression fixture: rule 4 used to strip a
+# script's own name from the line before matching, on the theory that a file
+# naming itself was usage text. That rewrote
+# `fm-remote-secondmate-control.sh retire "$id"` inside its own file into
+# ` retire "$id"`, which matches no destructive helper - so the one script whose
+# retire verb tears down a remote secondmate was the one script allowed to call
+# it unreviewed. The self-strip is gone; a file naming itself in usage text is
+# the rarer case and belongs in the allowlist, where it is read once.
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+cat >> "$FIXTURE/bin/fm-remote-secondmate-control.sh" <<'EOF'
+
+fm-remote-secondmate-control.sh retire "$id"
+EOF
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=1" \
+  "a script re-invoking its own destructive verb must not be exempt"$'\n'"--- output ---"$'\n'"$out"
+assert_contains "$out" "bin/fm-remote-secondmate-control.sh:" \
+  "the failure must name the self-invoking script"
+pass "rule 4: a script re-invoking its own destructive verb fails"
 
 # --- prose stays out of scope -----------------------------------------------
 #

@@ -109,6 +109,7 @@ init_changed_fixture_repo() {
     fm-bearings-snapshot.test.sh \
     fm-backend-cmux.test.sh \
     fm-backend-zellij.test.sh \
+    fm-destructive-automation.test.sh \
     fm-backend-orca.test.sh; do
     printf '#!/usr/bin/env bash\n# tests/lib.sh\n' >"$repo/tests/$script"
     chmod +x "$repo/tests/$script"
@@ -116,6 +117,9 @@ init_changed_fixture_repo() {
   : >"$repo/tests/lib.sh"
   : >"$repo/tests/fm-backend-herdr-eventwait.test.py"
   : >"$repo/bin/fm-supervisor-target-lib.sh"
+  : >"$repo/bin/fm-destructive-automation-check.sh"
+  : >"$repo/bin/fm-fleet-sync.sh"
+  : >"$repo/bin/fm-teardown.sh"
   : >"$repo/bin/unmapped-source.sh"
   printf '# .claude/settings.json\n# .pi/extensions/fm-primary-turnend-guard.ts\n' \
     >>"$repo/tests/fm-cd-pretool-check.test.sh"
@@ -169,6 +173,30 @@ test_changed_dependency_selection_and_unmapped_failure() {
   assert_contains "$listed" "tests/fm-pi-watch-extension.test.sh" "Pi source selects watcher coverage"
   git -C "$repo" add .agents .claude .pi
   git -C "$repo" -c user.name=test -c user.email=test@example.invalid commit -qm non-bin-source-change
+
+  # The destructive-automation contract is only worth what its test proves, so
+  # each of the three files a rule is keyed to has to select that test when it
+  # changes. Editing the check itself is the case that matters most and was the
+  # one missing: without a mapping the contract could be rewritten to enforce
+  # nothing and no test would run.
+  printf '\n' >>"$repo/bin/fm-destructive-automation-check.sh"
+  listed=$(cd "$repo" && bin/fm-test-run.sh --list --changed --base HEAD)
+  assert_contains "$listed" "tests/fm-destructive-automation.test.sh" \
+    "editing the destructive-automation check must run its own test"
+  git -C "$repo" add bin/fm-destructive-automation-check.sh
+  git -C "$repo" -c user.name=test -c user.email=test@example.invalid commit -qm check-change
+
+  printf '\n' >>"$repo/bin/fm-fleet-sync.sh"
+  printf '\n' >>"$repo/bin/fm-teardown.sh"
+  listed=$(cd "$repo" && bin/fm-test-run.sh --list --changed --base HEAD)
+  assert_contains "$listed" "tests/fm-destructive-automation.test.sh" \
+    "the startup sweep and teardown are the files rules 2 and 3 name; both must re-run the contract"
+  assert_contains "$listed" "tests/fm-session-start.test.sh" \
+    "the startup sweep must keep its own session-bootstrap coverage too"
+  assert_contains "$listed" "tests/fm-pr-merge.test.sh" \
+    "teardown must keep its own pr-forge coverage too"
+  git -C "$repo" add bin/fm-fleet-sync.sh bin/fm-teardown.sh
+  git -C "$repo" -c user.name=test -c user.email=test@example.invalid commit -qm sweep-teardown-change
 
   printf '\n' >>"$repo/src/unmapped.ts"
   set +e
