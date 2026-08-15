@@ -1524,3 +1524,76 @@ assert_contains "$out" "rc=1" \
 assert_contains "$out" "the sweep's scope cannot be determined" \
   "the failure must say the scope, not a line, is what it lost"$'\n'"--- output ---"$'\n'"$out"
 pass "fail-closed: an unresolvable sourcing line fails instead of shrinking rule 3"
+
+# --- the scope resolver reads a whole line, and reads real paths -------------
+#
+# Three fixtures for the resolver that turns a sourcing line into the files it
+# pulls in. Each covers a way the resolver used to model less than the thing it
+# was resolving, and each one passed the check that shipped in the commit before
+# them.
+#
+# One line can source two files. The resolver kept a single match, so whichever
+# name came last in `git ls-files` order won and the other was dropped from the
+# scope - and once the sourcing line itself is reviewed, a deletion in the
+# dropped file is invisible. Both halves are asserted by file-and-line, because a
+# sourcing line that names both files also fails, and matching a bare basename
+# would let that one finding stand in for the two that matter.
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+cat > "$FIXTURE/bin/fm-aaa-lib.sh" <<'EOF'
+#!/usr/bin/env bash
+rm -rf "$FM_HOME/projects"
+EOF
+cat > "$FIXTURE/bin/fm-zzz-lib.sh" <<'EOF'
+#!/usr/bin/env bash
+rm -rf "$FM_HOME/state"
+EOF
+cat >> "$FIXTURE/bin/fm-lock-lib.sh" <<'EOF'
+
+. "$SCRIPT_DIR/fm-aaa-lib.sh"; . "$SCRIPT_DIR/fm-zzz-lib.sh"
+EOF
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=1" \
+  "two libraries sourced on one line must both be in scope"$'\n'"--- output ---"$'\n'"$out"
+assert_contains "$out" "bin/fm-aaa-lib.sh:2" \
+  "the first file sourced on the line must be scanned, not just the last"$'\n'"--- output ---"$'\n'"$out"
+assert_contains "$out" "bin/fm-zzz-lib.sh:2" \
+  "the last file sourced on the line must be scanned too"$'\n'"--- output ---"$'\n'"$out"
+pass "rule 3: every file a sourcing line names enters the scope, not one of them"
+
+# The scope carries tracked paths, not bin/ plus a basename. bin/backends/ holds
+# tracked scripts, so a rebuilt "bin/<basename>" named a file that does not
+# exist: the scope grew by one, every line of the real file went unread, and the
+# count in the summary said the sweep had been followed.
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+cat > "$FIXTURE/bin/backends/fm-probe-lib.sh" <<'EOF'
+#!/usr/bin/env bash
+rm -rf "$FM_HOME/projects"
+EOF
+cat >> "$FIXTURE/bin/fm-lock-lib.sh" <<'EOF'
+
+. "$SCRIPT_DIR/backends/fm-probe-lib.sh"
+EOF
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=1" \
+  "a sourced library under bin/backends/ must be scanned"$'\n'"--- output ---"$'\n'"$out"
+assert_contains "$out" "bin/backends/fm-probe-lib.sh:2" \
+  "the scope must hold the tracked path, not bin/ plus the basename"$'\n'"--- output ---"$'\n'"$out"
+pass "rule 3: a sourced script outside bin/ itself is read, not silently skipped"
+
+# The option that names an output file is a token like any other, so the start of
+# a line bounds it the same way a space does. The handle required whitespace in
+# front, which no unindented line has.
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+cat >> "$FIXTURE/bin/fm-lock-lib.sh" <<'EOF'
+
+of=/var/tmp/fm-probe-out
+EOF
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=1" \
+  "an output option at the start of a line must be flagged"$'\n'"--- output ---"$'\n'"$out"
+assert_contains "$out" "fm-lock-lib.sh" \
+  "the failure must name the file the line is in"$'\n'"--- output ---"$'\n'"$out"
+pass "rule 3: an output option is flagged at the start of a line, not only after a space"

@@ -463,7 +463,15 @@ SWEEP_VERSION='([0-9]+([.][0-9]+)*)?'
 # long option cannot take an attached argument - `--output` needs a space or an
 # `=` in every convention that has one - so requiring it there costs nothing and
 # keeps `--outdated` out.
-SWEEP_OUTPUT_OPT='[[:space:]]-[oO]|[[:space:]]--(output|output-file|out|outfile)([[:space:]]|=)|[[:space:]]of='
+#
+# The start of the probe opens each alternative alongside whitespace, the same
+# boundary SWEEP_SCRIPT_RE spells with `^`. A joined logical line keeps the
+# first physical line's indentation, so `^` is only reached by an unindented
+# line, and requiring whitespace there modelled the option as something that
+# always has a token in front of it. Widening costs nothing and drops an
+# asymmetry between two handles that mean the same thing by "a token starts
+# here".
+SWEEP_OUTPUT_OPT='(^|[[:space:]])-[oO]|(^|[[:space:]])--(output|output-file|out|outfile)([[:space:]]|=)|(^|[[:space:]])of='
 # Every tracked bin/ script, by basename. Handing work to another script is the
 # one way the sweep can destroy work without naming a destructive verb, so a
 # reference to one from the sweep's scope is flagged like any other line and
@@ -485,10 +493,16 @@ SWEEP_FORBIDDEN='(^|[^[:alnum:]_.-])('"$SWEEP_VERBS_REMOVE"'|'"$SWEEP_VERBS_INPL
 # text in two of those files is two separate lines to review. Every reason has
 # to hold for the sweep's unattended context: nothing here may destroy work.
 #
-# The last four are the process boundary. Their reasons are the one kind this
-# file cannot check, because they describe a script this scan does not read; the
-# header says why that boundary is where it is, and each one is written to be
-# judged as the claim it is.
+# Two entries here are the process boundary - the fm-guard.sh and
+# fm-project-mode.sh handoffs. Their reasons are the one kind this file cannot
+# check, because they describe a script this scan does not read; the header says
+# why the boundary is where it is, and each is written to be judged as the claim
+# it is. They are named rather than counted off the end of the list, because a
+# position holds only until the next entry lands after it.
+#
+# The two `.` lines are the opposite case: sourcing pulls a file into the sweep's
+# own shell, so it widens the scope above instead of ending it, and that file's
+# own lines are then reviewed here under its own path.
 SWEEP_ALLOWLIST=$(
   cat <<'ENTRIES'
 bin/fm-fleet-sync.sh	if ! rm -f "$lock"; then	a single non-recursive rm -f of a provably-stale .git/packed-refs.lock, which holds no work
@@ -776,13 +790,32 @@ while [ -n "$sweep_pending" ]; do
       # Same probe the rules read: quotes and backslashes stripped, so
       # `. "$SCRIPT_DIR/fm-lock-lib.sh"` yields the basename plainly.
       sweep_probe=$(printf '%s\n' "$sweep_code" | tr -d "\"$SQ\\\\")
-      sweep_found=""
-      for sweep_name in $(git ls-files -- 'bin/*' | sed 's#.*/##'); do
+      # Every match on the line, not one: `. "$D/a.sh"; . "$D/b.sh"` is one
+      # logical line sourcing two scripts, and keeping only the last one leaves
+      # the other outside the scope while its sourcing line sits reviewed in
+      # SWEEP_ALLOWLIST - a deletion in the dropped script then passes rule 3
+      # unseen. Over-inclusion is the safe direction and the one taken here:
+      # `herdr.sh` is a substring of `fm-install-herdr.sh`, so a line naming the
+      # second enqueues both, which widens the basis and costs reviewed entries
+      # rather than hiding a line.
+      #
+      # The tracked path is what gets enqueued, not "bin/" plus the basename:
+      # bin/backends/ holds tracked scripts too, and a reconstructed
+      # `bin/herdr.sh` matches no EXEC_LINES prefix, so the scope would carry a
+      # name whose every line is silently unscanned.
+      sweep_matched=""
+      for sweep_path in $(git ls-files -- 'bin/*'); do
         case $sweep_probe in
-          *"$sweep_name"*) sweep_found="bin/$sweep_name" ;;
+          *"${sweep_path##*/}"*) ;;
+          *) continue ;;
+        esac
+        sweep_matched=yes
+        case " $SWEEP_SCOPE $sweep_next " in
+          *" $sweep_path "*) ;;
+          *) sweep_next="$sweep_next $sweep_path" ;;
         esac
       done
-      if [ -z "$sweep_found" ]; then
+      if [ -z "$sweep_matched" ]; then
         # A sourcing line naming no tracked script sources something this scan
         # cannot read, so the scope is unknown and the rule cannot make its
         # claim. Fail rather than skip: an unreadable branch of the sweep's own
@@ -791,10 +824,6 @@ while [ -n "$sweep_pending" ]; do
         printf '  %s\n' "$sweep_code" >&2
         continue
       fi
-      case " $SWEEP_SCOPE $sweep_next " in
-        *" $sweep_found "*) ;;
-        *) sweep_next="$sweep_next $sweep_found" ;;
-      esac
     done <<EOF
 $(printf '%s\n' "$EXEC_LINES" | grep -E -- "^${sweep_from}${TAB}" | probe_filter "$SWEEP_SOURCE_RE")
 EOF
