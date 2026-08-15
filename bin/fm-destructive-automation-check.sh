@@ -24,11 +24,11 @@
 #      reviewed line.
 #   3. The startup sweep (bin/fm-fleet-sync.sh) runs nothing removal-capable
 #      except its two reviewed lines.
-#   4. Every executable-position reference to a destructive helper anywhere in
-#      tracked bin/ is in the reviewed allowlist below. A new call site - which
-#      is what "a new automatic caller" looks like in the diff - is not in the
-#      allowlist, so it fails. Rule 4 is the general one; rules 1-3 pin the
-#      specific surfaces this fork had to remove.
+#   4. Every reference to a destructive helper anywhere in tracked bin/ whose
+#      name survives quote and backslash removal is in the reviewed allowlist
+#      below. A new call site - which is what "a new automatic caller" looks
+#      like in the diff - is not in the allowlist, so it fails. Rule 4 is the
+#      general one; rules 1-3 pin the specific surfaces this fork had to remove.
 #
 # Rules 2 and 3 match the ACTION, not one spelling of it, and both are inverted
 # for the same reason. A check that listed spellings would pass on
@@ -50,6 +50,32 @@
 # today, and it is the right trade: a reviewer adding an entry has to say why
 # the line cannot delete a branch, which is the question the check exists to
 # force.
+#
+# Rule 4 matches a NAME rather than a verb, and that is its boundary. It reads
+# the logical line with quote and backslash characters removed, so every way of
+# writing the name that the shell resolves while parsing is caught, not just the
+# contiguous one: `"$D/fm-""teardown.sh"`, `"$D/fm-tear"'down.sh'` and
+# `$D/fm-tear\down.sh` all run the same helper and all match. Removing those
+# characters can only join text that was already adjacent, so it adds hits and
+# never drops one. Reaching the helper through a variable is caught as well,
+# because the assignment names it: measured, `helper="$D/fm-teardown.sh"`
+# followed by `"$helper" "$id" --force` fails rule 4 on the assignment.
+#
+# What rule 4 cannot see is a name the shell assembles at RUN time out of
+# fragments that never appear together in the source - `"${p}teardown.sh"`, an
+# array element built in a loop, an `eval` over a computed string. No scan of
+# the text reaches those, and the answer is not to parse harder: the modelling
+# that loses git's option grammar above loses shell expansion by a wider margin,
+# and a scan that believes it resolves expansions fails open the first time it
+# is wrong. Rule 4 is a guardrail against the call site somebody adds without
+# thinking - which is what a new automatic caller has actually looked like in
+# this fork - and not a sandbox against one written to evade it.
+#
+# Rules 2 and 3 share that boundary and do not escape it by matching a verb:
+# `g=git; $g branch -D "$b"` spells neither `git branch` nor a removal verb the
+# scan can see. What differs is the blast radius of the residue, not its
+# existence. Any check made of text has this edge; the useful question is
+# whether the ordinary spelling fails closed, and after these rules it does.
 #
 # Every allowlist below licenses exactly one occurrence. An entry does not say
 # "this text is approved", it says "this occurrence is approved": a second copy
@@ -150,8 +176,18 @@ SWEEP=bin/fm-fleet-sync.sh
 SELF=bin/fm-destructive-automation-check.sh
 SELF_TEST=tests/fm-destructive-automation.test.sh
 
-# Helpers whose whole job is destructive or irreversible. A reference to one in
-# executable position is a call site until the allowlist says otherwise.
+# Helpers whose whole job is destructive or irreversible. A reference to one is
+# a call site until the allowlist says otherwise.
+#
+# Matched against the line with quote and backslash characters removed, because
+# the shell resolves those while parsing and the helper still runs: measured
+# against the contiguous-only form, `"$SCRIPT_DIR/fm-""teardown.sh" "$id"
+# --force`, `"$SCRIPT_DIR/fm-tear"'down.sh' "$id" --force` and
+# `$SCRIPT_DIR/fm-tear\down.sh "$id" --force` all reached fm-teardown.sh and all
+# passed rule 4 unreviewed. The removal only ever adds hits: no helper name here
+# contains a quote or a backslash, so a name that was already contiguous is
+# untouched by it, and deleting characters elsewhere can only bring more text
+# together. See the header for the residue it does not reach.
 DESTRUCTIVE_RE='fm-teardown\.sh|fm-pr-merge\.sh|fm-merge-local\.sh|fm-remote-secondmate-control\.sh retire'
 
 # Rule 2 inverted: every `git branch` invocation, whatever its options. Matching
@@ -444,7 +480,15 @@ while IFS= read -r hit; do
   # that names a destructive helper at all, which is ~2250 lines of the fork's
   # own usage and error text, and one subshell each was this check's entire
   # runtime.
-  [[ $code =~ $DESTRUCTIVE_RE ]] || continue
+  #
+  # Matched on the probe, not the line: quote and backslash characters are the
+  # shell's, removed before matching so a name split across them still reads as
+  # one. The allowlist key below stays the untouched line, so an entry quotes
+  # the source a reviewer has to judge.
+  probe=${code//\"/}
+  probe=${probe//\'/}
+  probe=${probe//\\/}
+  [[ $probe =~ $DESTRUCTIVE_RE ]] || continue
 
   norm=$(printf '%s\n' "$code" | awk '{ $1 = $1; print }')
   CALL_SEEN="${CALL_SEEN}${file}${TAB}${norm}${NL}"
@@ -454,7 +498,25 @@ while IFS= read -r hit; do
     printf '  Add it to ALLOWLIST in bin/fm-destructive-automation-check.sh with a reason that says why no automatic path reaches it.\n' >&2
   fi
 done <<EOF
-$(printf '%s\n' "$EXEC_LINES" | grep -E -- "$DESTRUCTIVE_RE" || true)
+$(
+  # The pre-filter matches the same probe the loop does, and prints the original
+  # line, so a name split across quotes reaches the loop with its source intact.
+  # One awk pass rather than grep, because grep cannot match one form and print
+  # another. Paths and line numbers carry none of the removed characters, so the
+  # two leading fields are the same either way.
+  # shellcheck disable=SC2016 # awk owns every $ expression in this literal program.
+  printf '%s\n' "$EXEC_LINES" \
+    | FM_DESTRUCTIVE_RE=$DESTRUCTIVE_RE awk '
+        BEGIN { SQ = sprintf("%c", 39); re = ENVIRON["FM_DESTRUCTIVE_RE"] }
+        {
+          probe = $0
+          gsub(/"/, "", probe)
+          gsub(SQ, "", probe)
+          gsub(/\\/, "", probe)
+          if (probe ~ re) { print }
+        }
+      ' || true
+)
 EOF
 
 check_entry_counts "$ALLOWLIST" "$CALL_SEEN" ALLOWLIST "rule 4" "call site"

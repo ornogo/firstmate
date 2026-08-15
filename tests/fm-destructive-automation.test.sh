@@ -497,6 +497,75 @@ assert_contains "$out" "bin/fm-remote-secondmate-control.sh:" \
   "the failure must name the self-invoking script"
 pass "rule 4: a script re-invoking its own destructive verb fails"
 
+# --- a helper name split by the shell's own punctuation ---------------------
+#
+# Regression fixtures for a fail-open rule 4 had while it matched the raw line:
+# the helper's name had to appear contiguously, so any of the shell's ordinary
+# ways of writing the same path hid the call site. All three payloads below run
+# fm-teardown.sh and all three passed the check unreviewed. Rule 4 now matches
+# the line with quote and backslash characters removed, which is exactly the
+# punctuation the shell resolves while parsing.
+#
+# The removal cannot cost a hit: no helper name contains a quote or a backslash,
+# so a contiguous name is untouched by it.
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+cat >> "$FIXTURE/bin/fm-bootstrap.sh" <<'EOF'
+
+"$SCRIPT_DIR/fm-""teardown.sh" "$id" --force
+EOF
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=1" \
+  "a name split across two double-quoted strings must still be a call site"$'\n'"--- output ---"$'\n'"$out"
+assert_contains "$out" "reaches a destructive helper and is not in the reviewed allowlist" \
+  "the failure must be rule 4's, not an unrelated one"
+pass "rule 4: adjacent double-quoted strings do not hide a helper name"
+
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+cat >> "$FIXTURE/bin/fm-bootstrap.sh" <<'EOF'
+
+"$SCRIPT_DIR/fm-tear"'down.sh' "$id" --force
+EOF
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=1" \
+  "a name split across a double- and a single-quoted string must still be a call site"$'\n'"--- output ---"$'\n'"$out"
+assert_contains "$out" "reaches a destructive helper and is not in the reviewed allowlist" \
+  "the failure must be rule 4's, not an unrelated one"
+pass "rule 4: mixing quote styles does not hide a helper name"
+
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+cat >> "$FIXTURE/bin/fm-bootstrap.sh" <<'EOF'
+
+$SCRIPT_DIR/fm-tear\down.sh "$id" --force
+EOF
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=1" \
+  "an escaped character inside a name must still be a call site"$'\n'"--- output ---"$'\n'"$out"
+assert_contains "$out" "reaches a destructive helper and is not in the reviewed allowlist" \
+  "the failure must be rule 4's, not an unrelated one"
+pass "rule 4: a backslash inside a helper name does not hide it"
+
+# Reaching the helper through a variable is caught on the assignment, because
+# the assignment is where the name is written. This pins that: the obvious way
+# to quiet rule 4's false positives is to skip lines that assign rather than
+# invoke, and doing so reopens the whole indirect class - measured, a rule 4
+# that skips assignment lines passes this payload.
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+cat >> "$FIXTURE/bin/fm-bootstrap.sh" <<'EOF'
+
+helper="$SCRIPT_DIR/fm-teardown.sh"
+"$helper" "$id" --force
+EOF
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=1" \
+  "a helper reached through a variable must be caught where the name is written"$'\n'"--- output ---"$'\n'"$out"
+assert_contains "$out" "reaches a destructive helper and is not in the reviewed allowlist" \
+  "the failure must be rule 4's, not an unrelated one"
+pass "rule 4: an assignment naming a helper is a reviewable call site"
+
 # --- prose stays out of scope -----------------------------------------------
 #
 # Every rule but the first reads executable lines only. Documenting a
