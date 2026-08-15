@@ -46,10 +46,29 @@
 # passing, and no git grammar has to be modelled to keep that true.
 #
 # The cost is that a read-only `git branch` outside teardown needs a reviewed
-# line too, and so does prose that merely reads like one. That cost is one line
-# today, and it is the right trade: a reviewer adding an entry has to say why
-# the line cannot delete a branch, which is the question the check exists to
+# line too, and so does prose that merely reads like one. That cost is four
+# lines today, and it is the right trade: a reviewer adding an entry has to say
+# why the line cannot delete a branch, which is the question the check exists to
 # force.
+#
+# Three of those four are the price of one deliberate widening. Rules 2 and 3
+# used to scan from `git` up to the first `;`, `|` or `&`, to stop the match at
+# what looked like the end of the git command. That exclusion was itself the
+# grammar-modelling this header rejects, one level down: those characters are
+# separators only when the shell reads them as such, and inside a quoted
+# argument they are ordinary text. Measured against the excluding form,
+# `git -C "/tmp/a;b" branch -D "$b"` passed rule 2 unreviewed, and
+# `git -C "/tmp/a;b" reset --hard HEAD` passed rule 3. Both rules now scan the
+# whole line, which cannot be wrong about where a command ends because it does
+# not ask. The three extra entries are prose that names a branch after a `git`
+# earlier on the line; each reason says which git command actually runs there.
+#
+# All three rules match through probe_filter, on the line with quote and
+# backslash characters removed. Rules 2 and 3 gained that with rule 4: measured
+# against the raw-line form, `git -C "$PROJ" "branch" -D "$b"`,
+# `git -C "$PROJ" bra"nch" -D "$b"` and `"rm" -rf "$d"` all ran and all passed.
+# One normalization for all three is the point - a hole found in any rule's
+# reading of the shell is closed in every rule at once.
 #
 # Rule 4 matches a NAME rather than a verb, and that is its boundary. It reads
 # the logical line with quote and backslash characters removed, so every way of
@@ -179,31 +198,50 @@ SELF_TEST=tests/fm-destructive-automation.test.sh
 # Helpers whose whole job is destructive or irreversible. A reference to one is
 # a call site until the allowlist says otherwise.
 #
-# Matched against the line with quote and backslash characters removed, because
-# the shell resolves those while parsing and the helper still runs: measured
-# against the contiguous-only form, `"$SCRIPT_DIR/fm-""teardown.sh" "$id"
-# --force`, `"$SCRIPT_DIR/fm-tear"'down.sh' "$id" --force` and
+# Matched through probe_filter, so quote and backslash characters are gone
+# before matching: measured against the contiguous-only form,
+# `"$SCRIPT_DIR/fm-""teardown.sh" "$id" --force`,
+# `"$SCRIPT_DIR/fm-tear"'down.sh' "$id" --force` and
 # `$SCRIPT_DIR/fm-tear\down.sh "$id" --force` all reached fm-teardown.sh and all
-# passed rule 4 unreviewed. The removal only ever adds hits: no helper name here
-# contains a quote or a backslash, so a name that was already contiguous is
-# untouched by it, and deleting characters elsewhere can only bring more text
-# together. See the header for the residue it does not reach.
-DESTRUCTIVE_RE='fm-teardown\.sh|fm-pr-merge\.sh|fm-merge-local\.sh|fm-remote-secondmate-control\.sh retire'
+# passed rule 4 unreviewed.
+#
+# The one two-word name matches its separator as `[[:space:]]+`, not a literal
+# space: `fm-remote-secondmate-control.sh   retire` retires the remote half just
+# as the single-spaced spelling does, and EXEC_LINES preserves internal
+# whitespace, so a literal space here reads reindentation as a different command.
+DESTRUCTIVE_RE='fm-teardown\.sh|fm-pr-merge\.sh|fm-merge-local\.sh|fm-remote-secondmate-control\.sh[[:space:]]+retire'
 
 # Rule 2 inverted: every `git branch` invocation, whatever its options. Matching
 # the verb rather than a delete option is what makes an unanticipated spelling
 # fail closed - see the header on why reading the option run cannot be made
 # correct.
-BRANCH_RE='git[^;|&]*[[:space:]]branch([[:space:]]|$)'
+#
+# `git.*`, not `git[^;|&]*`. Stopping the scan at the first `;`, `|` or `&` was
+# an attempt to end the match at the end of the git command, and it was the
+# header's own failure mode: it modelled a subset of the shell's grammar and fell
+# open at the boundary of the subset, because those characters are separators
+# only when the shell reads them as such. Measured against the excluding form,
+# `git -C "/tmp/a;b" branch -D "$b"` and its `|` and `&` variants all passed rule
+# 2 unreviewed - a quoted path is an argument, not a boundary. Widening costs the
+# three prose lines reviewed below, and buys a rule that does not need to know
+# where a command ends.
+BRANCH_RE='git.*[[:space:]]branch([[:space:]]|$)'
 
 # Lines outside teardown that read as a `git branch` invocation and have been
 # read and found not to delete anything, as "<path><TAB><normalized line><TAB>
 # <reason>", normalized the same way as ALLOWLIST below. Tracked bin/ has
 # exactly two real `git branch` invocations and both are the sanctioned
-# deletions in bin/fm-teardown.sh, so the one entry here is prose.
+# deletions in bin/fm-teardown.sh, so every entry here is prose: the word
+# "branch" reached by BRANCH_RE's `.*` from a `git` earlier on the same line,
+# inside an echo or after the `||` of a rev-parse. That is the price of not
+# guessing where a command ends, and each reason below says which git command
+# actually runs on the line and why it cannot delete a ref.
 BRANCH_ALLOWLIST=$(
   cat <<'ENTRIES'
 bin/fm-bootstrap.sh	echo "TANGLE: primary checkout on feature branch '$tangle_branch' (expected '$tangle_default'); the work is safe on that ref - restore the primary with: git -C $FM_ROOT checkout $tangle_default, then re-validate the branch in a proper worktree"	one echo whose text happens to put the word "branch" after a `git checkout` suggestion; it runs no git command
+bin/fm-merge-local.sh	git -C "$PROJ" rev-parse --verify --quiet "refs/heads/$BRANCH" >/dev/null || { echo "error: branch $BRANCH does not exist in $PROJ" >&2; exit 1; }	the only git command on the line is rev-parse --verify --quiet, a read that resolves a ref name; the word "branch" is in the echo of its failure path, which exits
+bin/fm-promote.sh	echo "next: FM_HOME=$HOME_Q bin/fm-send.sh fm-$ID '<ship instructions for mode=$MODE: review scratch state with git status and git log; reset to a clean default-branch base; carry over only intended fix changes; create branch fm/$ID; implement; report done>'"	one echo printing the next command for the founder to run; the git verbs and "create branch" are prose inside its quoted instruction text, and nothing on the line executes
+bin/fm-review-diff.sh	git -C "$WT" rev-parse --verify --quiet "refs/heads/$BRANCH" >/dev/null || { echo "error: branch $BRANCH does not exist in $WT" >&2; exit 1; }	the same read-then-exit shape as fm-merge-local.sh above, against the worktree rather than the project
 ENTRIES
 )
 
@@ -232,7 +270,13 @@ ENTRIES
 # where an unattended one would sit. The cost is that a line ending a path in
 # `/rm` is flagged too, which is the fail-closed direction and costs nothing in
 # the shipped sweep.
-SWEEP_FORBIDDEN='(^|[^[:alnum:]_.-])(rm|rmdir|unlink|shred)([[:space:]]|$)|git[^;|&]*[[:space:]](branch|worktree|clean|gc|prune|reflog|update-ref|reset|checkout|restore|switch|stash|push)([[:space:]]|$)|-delete([[:space:]]|$)|-exec[[:space:]]+[^[:space:]]*rm'
+#
+# The git alternative reads `git.*` for the reason given on BRANCH_RE: the same
+# separator exclusion stood here, and `git -C "/tmp/a;b" reset --hard HEAD`,
+# `git -C "/tmp/a|b" worktree remove wt` and `git -C "/tmp/a&b" checkout -f HEAD`
+# all passed rule 3 unreviewed. Widening costs the sweep nothing - it has no
+# prose naming a git verb - so the three reviewed lines below are unchanged.
+SWEEP_FORBIDDEN='(^|[^[:alnum:]_.-])(rm|rmdir|unlink|shred)([[:space:]]|$)|git.*[[:space:]](branch|worktree|clean|gc|prune|reflog|update-ref|reset|checkout|restore|switch|stash|push)([[:space:]]|$)|-delete([[:space:]]|$)|-exec[[:space:]]+[^[:space:]]*rm'
 
 # The sweep's reviewed lines, as "<normalized line><TAB><reason>", normalized
 # the same way as ALLOWLIST below. Every reason has to hold for the sweep's
@@ -272,6 +316,37 @@ FAILURES=0
 fail() {
   printf 'fm-destructive-automation-check: %s\n' "$1" >&2
   FAILURES=$((FAILURES + 1))
+}
+
+# Reads "<path><TAB><lineno><TAB><line>" records on stdin and prints the ones
+# whose *probe* matches $1, where the probe is the line with quote and backslash
+# characters removed. Every rule matches through here, so all three share one
+# answer to "what does the shell read this line as".
+#
+# Removal, not blanking: the shell deletes those characters while parsing, so
+# `git "branch" -D` runs git's branch verb and `fm-tear\down.sh` runs
+# fm-teardown.sh. Blanking would keep the two halves apart and miss both. The
+# removal only ever adds hits - deleting characters can only bring text together,
+# never separate it - so no rule loses a match it had before, and the shipped
+# tree gains none. See the header for the residue removal does not reach.
+#
+# One awk pass rather than grep, because the match is on the probe while the
+# printed record is the original line: an allowlist entry has to quote the source
+# a reviewer reads, not a stripped rewrite of it. Paths and line numbers carry
+# none of the removed characters, so the two leading fields are the same either
+# way.
+probe_filter() {
+  # shellcheck disable=SC2016 # awk owns every $ expression in this literal program.
+  FM_PROBE_RE=$1 awk '
+    BEGIN { SQ = sprintf("%c", 39); re = ENVIRON["FM_PROBE_RE"] }
+    {
+      probe = $0
+      gsub(/"/, "", probe)
+      gsub(SQ, "", probe)
+      gsub(/\\/, "", probe)
+      if (probe ~ re) { print }
+    }
+  ' || true
 }
 
 # Exact-key membership in a "<key><TAB>...<TAB><reason>" allowlist. The key is
@@ -426,7 +501,7 @@ while IFS= read -r hit; do
   printf '  %s\n' "$norm" >&2
   printf '  If it cannot delete a branch, add it to BRANCH_ALLOWLIST in bin/fm-destructive-automation-check.sh with a reason that says why.\n' >&2
 done <<EOF
-$(printf '%s\n' "$EXEC_LINES" | grep -E -- "$BRANCH_RE" || true)
+$(printf '%s\n' "$EXEC_LINES" | probe_filter "$BRANCH_RE")
 EOF
 
 check_entry_counts "$BRANCH_ALLOWLIST" "$BRANCH_SEEN" BRANCH_ALLOWLIST "rule 2" line
@@ -450,7 +525,7 @@ else
     printf '  %s\n' "$norm" >&2
     printf '  The startup sweep runs unattended on every boot. Remove it, or add it to SWEEP_ALLOWLIST in bin/fm-destructive-automation-check.sh with a reason that says why it cannot destroy work.\n' >&2
   done <<EOF
-$(printf '%s\n' "$EXEC_LINES" | grep -E -- "^${SWEEP}${TAB}" | grep -E -- "$SWEEP_FORBIDDEN" || true)
+$(printf '%s\n' "$EXEC_LINES" | grep -E -- "^${SWEEP}${TAB}" | probe_filter "$SWEEP_FORBIDDEN")
 EOF
 
   check_entry_counts "$SWEEP_ALLOWLIST" "$SWEEP_SEEN" SWEEP_ALLOWLIST "rule 3" line
@@ -481,10 +556,10 @@ while IFS= read -r hit; do
   # own usage and error text, and one subshell each was this check's entire
   # runtime.
   #
-  # Matched on the probe, not the line: quote and backslash characters are the
-  # shell's, removed before matching so a name split across them still reads as
-  # one. The allowlist key below stays the untouched line, so an entry quotes
-  # the source a reviewer has to judge.
+  # Matched on the probe, not the line, the same way probe_filter matches: quote
+  # and backslash characters are the shell's, removed before matching so a name
+  # split across them still reads as one. The allowlist key below stays the
+  # untouched line, so an entry quotes the source a reviewer has to judge.
   probe=${code//\"/}
   probe=${probe//\'/}
   probe=${probe//\\/}
@@ -499,23 +574,9 @@ while IFS= read -r hit; do
   fi
 done <<EOF
 $(
-  # The pre-filter matches the same probe the loop does, and prints the original
-  # line, so a name split across quotes reaches the loop with its source intact.
-  # One awk pass rather than grep, because grep cannot match one form and print
-  # another. Paths and line numbers carry none of the removed characters, so the
-  # two leading fields are the same either way.
-  # shellcheck disable=SC2016 # awk owns every $ expression in this literal program.
-  printf '%s\n' "$EXEC_LINES" \
-    | FM_DESTRUCTIVE_RE=$DESTRUCTIVE_RE awk '
-        BEGIN { SQ = sprintf("%c", 39); re = ENVIRON["FM_DESTRUCTIVE_RE"] }
-        {
-          probe = $0
-          gsub(/"/, "", probe)
-          gsub(SQ, "", probe)
-          gsub(/\\/, "", probe)
-          if (probe ~ re) { print }
-        }
-      ' || true
+  # The pre-filter matches the same probe the loop re-derives, so a name split
+  # across quotes reaches the loop with its source intact.
+  printf '%s\n' "$EXEC_LINES" | probe_filter "$DESTRUCTIVE_RE"
 )
 EOF
 

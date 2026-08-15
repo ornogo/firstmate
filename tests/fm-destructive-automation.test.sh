@@ -206,8 +206,8 @@ pass "rule 2: a read-only git branch still needs a reviewed line"
 # line, not per file: a real deletion added to the same file still fails.
 FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
 out=$(run_check "$FIXTURE")
-assert_contains "$out" "reviewed_branch_lines=1" \
-  "the shipped tree must license its one reviewed branch line, not zero"$'\n'"--- output ---"$'\n'"$out"
+assert_contains "$out" "reviewed_branch_lines=4" \
+  "the shipped tree must license its four reviewed branch lines, not zero"$'\n'"--- output ---"$'\n'"$out"
 cat >> "$FIXTURE/bin/fm-bootstrap.sh" <<'EOF'
 
 git -C "$PROJ" branch -D -- "$stale"
@@ -565,6 +565,128 @@ assert_contains "$out" "rc=1" \
 assert_contains "$out" "reaches a destructive helper and is not in the reviewed allowlist" \
   "the failure must be rule 4's, not an unrelated one"
 pass "rule 4: an assignment naming a helper is a reviewable call site"
+
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+cat >> "$FIXTURE/bin/fm-bootstrap.sh" <<'EOF'
+
+"$SCRIPT_DIR/fm-on.sh" "$ID" fm-remote-secondmate-control.sh   retire "$ID"
+EOF
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=1" \
+  "extra spacing before the retire verb must not hide the call site"$'\n'"--- output ---"$'\n'"$out"
+assert_contains "$out" "reaches a destructive helper and is not in the reviewed allowlist" \
+  "the failure must be rule 4's, not an unrelated one"
+pass "rule 4: whitespace between a helper and its verb is not part of the name"
+
+# --- a quoted metacharacter is an argument, not a command boundary -----------
+#
+# Regression fixtures for a fail-open rules 2 and 3 shared while they scanned
+# from `git` only as far as the first `;`, `|` or `&`. That exclusion was meant
+# to end the match where the git command ends, but those characters are
+# separators only when the shell reads them as such: inside a quoted argument
+# they are ordinary text, and the scan stopped anyway. Every payload below runs
+# the destructive git command it names, and every one passed unreviewed. Both
+# rules now scan the whole line, which cannot be wrong about where a command
+# ends because it does not ask.
+#
+# Rule 2's payloads go in bin/fm-bootstrap.sh, which is not the startup sweep,
+# so only rule 2 can catch them and the assertion is unambiguous about which
+# rule closed the hole.
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+cat >> "$FIXTURE/bin/fm-bootstrap.sh" <<'EOF'
+
+git -C "/tmp/a;b" branch -D "$b"
+EOF
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=1" \
+  "a semicolon inside a quoted path must not end the scan of a git command"$'\n'"--- output ---"$'\n'"$out"
+assert_contains "$out" "runs git branch, which can delete one" \
+  "the failure must be rule 2's, not an unrelated one"
+pass "rule 2: a quoted semicolon does not hide a branch deletion"
+
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+cat >> "$FIXTURE/bin/fm-bootstrap.sh" <<'EOF'
+
+git -C "/tmp/a|b" branch -D "$b"
+EOF
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=1" \
+  "a pipe inside a quoted path must not end the scan of a git command"$'\n'"--- output ---"$'\n'"$out"
+assert_contains "$out" "runs git branch, which can delete one" \
+  "the failure must be rule 2's, not an unrelated one"
+pass "rule 2: a quoted pipe does not hide a branch deletion"
+
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+cat >> "$FIXTURE/bin/fm-bootstrap.sh" <<'EOF'
+
+git -C "/tmp/a&b" branch -D "$b"
+EOF
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=1" \
+  "an ampersand inside a quoted path must not end the scan of a git command"$'\n'"--- output ---"$'\n'"$out"
+assert_contains "$out" "runs git branch, which can delete one" \
+  "the failure must be rule 2's, not an unrelated one"
+pass "rule 2: a quoted ampersand does not hide a branch deletion"
+
+# The same normalization rule 4 uses reaches rules 2 and 3 too, so quoting the
+# verb no longer hides it either. `git "branch" -D` runs git's branch verb.
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+cat >> "$FIXTURE/bin/fm-bootstrap.sh" <<'EOF'
+
+git -C "$PROJ" bra"nch" -D "$b"
+EOF
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=1" \
+  "a quote splitting the branch verb must not hide the invocation"$'\n'"--- output ---"$'\n'"$out"
+assert_contains "$out" "runs git branch, which can delete one" \
+  "the failure must be rule 2's, not an unrelated one"
+pass "rule 2: a quote inside the git verb does not hide a branch deletion"
+
+# Rule 3's payloads go in the startup sweep itself, which is where the rule
+# looks.
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+cat >> "$FIXTURE/bin/fm-fleet-sync.sh" <<'EOF'
+
+git -C "/tmp/a;b" reset --hard HEAD
+EOF
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=1" \
+  "a semicolon inside a quoted path must not hide a sweep reset"$'\n'"--- output ---"$'\n'"$out"
+assert_contains "$out" "can destroy work" \
+  "the failure must be rule 3's, not an unrelated one"
+pass "rule 3: a quoted semicolon does not hide a working-tree overwrite"
+
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+cat >> "$FIXTURE/bin/fm-fleet-sync.sh" <<'EOF'
+
+git -C "/tmp/a|b" worktree remove wt
+EOF
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=1" \
+  "a pipe inside a quoted path must not hide a sweep worktree removal"$'\n'"--- output ---"$'\n'"$out"
+assert_contains "$out" "can destroy work" \
+  "the failure must be rule 3's, not an unrelated one"
+pass "rule 3: a quoted pipe does not hide a worktree removal"
+
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+cat >> "$FIXTURE/bin/fm-fleet-sync.sh" <<'EOF'
+
+"rm" -rf "$d"
+EOF
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=1" \
+  "quoting the command name must not hide a sweep removal"$'\n'"--- output ---"$'\n'"$out"
+assert_contains "$out" "can destroy work" \
+  "the failure must be rule 3's, not an unrelated one"
+pass "rule 3: a quoted command name does not hide a removal"
 
 # --- prose stays out of scope -----------------------------------------------
 #
