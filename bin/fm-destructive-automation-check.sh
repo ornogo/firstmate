@@ -251,12 +251,28 @@ ENTRIES
 # spelling fail closed.
 #
 # "Destroy work" is wider than "delete". Discarding an uncommitted edit loses it
-# as completely as removing the file does, so the git verbs cover both the ref
-# and path removals (branch, worktree, clean, gc, prune, reflog, update-ref) and
-# the ones that overwrite or move the working tree (reset, checkout, restore,
-# switch, stash), plus push, which deletes a remote branch by `--delete` or by a
-# colon refspec that names no local side. Each is flagged on the verb alone; a
-# reviewed line says why that occurrence cannot lose anything.
+# as completely as removing the file does, so the git verbs cover the ref and
+# path removals (branch, worktree, clean, gc, prune, reflog, update-ref, repack,
+# tag, replace, notes), the ones that overwrite or move the working tree or the
+# index (reset, checkout, restore, switch, stash, merge, rebase, cherry-pick,
+# revert, am, apply, read-tree, sparse-checkout, submodule, update-index, mv,
+# bisect), the ones that rewrite history or where a ref points (filter-branch,
+# symbolic-ref, remote), and push, which deletes a remote branch by `--delete`
+# or by a colon refspec that names no local side. Each is flagged on the verb
+# alone; a reviewed line says why that occurrence cannot lose anything.
+#
+# The list is the enforceable form of the rule, and it is a list, so state the
+# residue plainly rather than implying it away: a git verb outside it is not
+# reviewed. The alternative was measured rather than argued. Flagging every
+# `git` in the sweep needs no list and cannot be incomplete, and it costs 20
+# reviewed entries on today's sweep, all but one of them plain reads
+# (`rev-parse`, `show-ref`, `merge-base`, `rev-list`, `fetch --prune`) plus one
+# false hit on an `echo`. Twenty entries of reads is not a stricter gate; it is
+# the same gate with the reviewed set diluted until nobody reads it, and it
+# re-reviews on every read somebody adds. So the verbs are enumerated, the class
+# is stated above so a reader can judge what is missing rather than guess, and
+# adding one is a one-line change with a measured cost - this round added
+# fourteen verbs for four entries.
 #
 # "--prune" on git fetch is deliberately not matched: it drops remote-tracking
 # refs, which hold no work. It is spelled with a hyphen before the verb, and the
@@ -274,9 +290,10 @@ ENTRIES
 # The git alternative reads `git.*` for the reason given on BRANCH_RE: the same
 # separator exclusion stood here, and `git -C "/tmp/a;b" reset --hard HEAD`,
 # `git -C "/tmp/a|b" worktree remove wt` and `git -C "/tmp/a&b" checkout -f HEAD`
-# all passed rule 3 unreviewed. Widening costs the sweep nothing - it has no
-# prose naming a git verb - so the three reviewed lines below are unchanged.
-SWEEP_FORBIDDEN='(^|[^[:alnum:]_.-])(rm|rmdir|unlink|shred)([[:space:]]|$)|git.*[[:space:]](branch|worktree|clean|gc|prune|reflog|update-ref|reset|checkout|restore|switch|stash|push)([[:space:]]|$)|-delete([[:space:]]|$)|-exec[[:space:]]+[^[:space:]]*rm'
+# all passed rule 3 unreviewed. That widening cost the sweep nothing, since it
+# has no prose naming a git verb; the four entries below beyond the original
+# three are the cost of the verb class, not of `git.*`.
+SWEEP_FORBIDDEN='(^|[^[:alnum:]_.-])(rm|rmdir|unlink|shred)([[:space:]]|$)|git.*[[:space:]](branch|worktree|clean|gc|prune|reflog|update-ref|reset|checkout|restore|switch|stash|push|merge|rebase|cherry-pick|revert|am|apply|read-tree|sparse-checkout|submodule|filter-branch|replace|notes|tag|update-index|repack|symbolic-ref|remote|bisect|mv)([[:space:]]|$)|-delete([[:space:]]|$)|-exec[[:space:]]+[^[:space:]]*rm'
 
 # The sweep's reviewed lines, as "<normalized line><TAB><reason>", normalized
 # the same way as ALLOWLIST below. Every reason has to hold for the sweep's
@@ -286,6 +303,10 @@ SWEEP_ALLOWLIST=$(
 if ! rm -f "$lock"; then	a single non-recursive rm -f of a provably-stale .git/packed-refs.lock, which holds no work
 git -C "$PROJ" worktree list --porcelain 2>/dev/null | sed -n 's#^branch refs/heads/##p' | grep -Fxq -- "$DEFAULT"	a read: the whole pipeline lists worktrees and asks whether one holds the default branch, removing none
 if ! git -C "$PROJ" checkout --quiet "$DEFAULT" 2>/dev/null; then	re-attaches a detached HEAD the branch above has already proven clean, free of unique commits, and an ancestor of the base; --quiet is not --force, so git aborts rather than overwrite, and every other drift is reported and left untouched
+ref=$(git -C "$PROJ" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)	a read: symbolic-ref with no ref-and-value pair and no --delete resolves origin/HEAD and prints it; the || true swallows the failure when it is unset
+cur=$(git -C "$PROJ" symbolic-ref --short HEAD 2>/dev/null || echo "")	the same read against HEAD, asking which branch is checked out before deciding anything; it writes nothing and its failure path yields the empty string
+if ! git -C "$PROJ" remote get-url origin >/dev/null 2>&1; then	a read: the get-url subcommand prints a remote URL, and the failure branch reports "no origin remote" and returns; remote is flagged for its remove, prune and set-url subcommands, which this line does not use
+if ! merge_output=$(git -C "$PROJ" merge --ff-only "$BASE" 2>&1); then	the only line in the sweep that writes the working tree: --ff-only refuses to merge and exits non-zero unless the local ref is already an ancestor of the base, so it can only advance a branch that has no commits of its own, and the lines above have already proven the tree clean, the branch an ancestor, and the base a real commit; the failure path reports and returns without a second attempt
 ENTRIES
 )
 

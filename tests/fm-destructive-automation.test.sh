@@ -61,6 +61,11 @@ assert_contains "$out" "fm-destructive-automation-check: ok scripts=" \
   "a passing run must report the number of scripts it scanned"
 assert_contains "$out" "reviewed_call_sites=" \
   "a passing run must report how many destructive call sites are allowlisted"
+# Rule 3's verb class is a list, so the number of sweep lines it licenses is the
+# list's price. Pinning it means widening the class without reading the lines it
+# newly catches fails here rather than passing quietly with a bigger allowlist.
+assert_contains "$out" "reviewed_sweep_lines=7" \
+  "the shipped sweep must license its seven reviewed lines, not silently more"$'\n'"--- output ---"$'\n'"$out"
 pass "the shipped tree has no unreviewed destructive automation"
 
 # --- the fixture is a faithful basis ----------------------------------------
@@ -687,6 +692,111 @@ assert_contains "$out" "rc=1" \
 assert_contains "$out" "can destroy work" \
   "the failure must be rule 3's, not an unrelated one"
 pass "rule 3: a quoted command name does not hide a removal"
+
+
+# --- rule 3 flags the whole work-destroying verb class ------------------------
+#
+# Six of these were named by a reviewer that read the old list as incomplete;
+# the seventh and eighth are verbs the same class implies but nobody named, and
+# they are here so the fix reads as the class it claims rather than as the six
+# spellings that were pointed at. Each payload is an ordinary git command that
+# would run unattended on every boot.
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+cat >> "$FIXTURE/bin/fm-fleet-sync.sh" <<'EOF'
+
+git -C "$PROJ" merge "$BASE"
+EOF
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=1" \
+  "a merge overwrites the working tree from another ref"$'\n'"--- output ---"$'\n'"$out"
+assert_contains "$out" "can destroy work" \
+  "the failure must be rule 3's, not an unrelated one"
+pass "rule 3: an unattended git merge is a reviewable line"
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+cat >> "$FIXTURE/bin/fm-fleet-sync.sh" <<'EOF'
+
+git -C "$PROJ" rebase "$BASE"
+EOF
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=1" \
+  "a rebase rewrites the branch and can drop commits"$'\n'"--- output ---"$'\n'"$out"
+assert_contains "$out" "can destroy work" \
+  "the failure must be rule 3's, not an unrelated one"
+pass "rule 3: an unattended git rebase is a reviewable line"
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+cat >> "$FIXTURE/bin/fm-fleet-sync.sh" <<'EOF'
+
+git -C "$PROJ" cherry-pick "$sha"
+EOF
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=1" \
+  "a cherry-pick writes the working tree and can conflict"$'\n'"--- output ---"$'\n'"$out"
+assert_contains "$out" "can destroy work" \
+  "the failure must be rule 3's, not an unrelated one"
+pass "rule 3: an unattended git cherry-pick is a reviewable line"
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+cat >> "$FIXTURE/bin/fm-fleet-sync.sh" <<'EOF'
+
+git -C "$PROJ" revert --no-edit "$sha"
+EOF
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=1" \
+  "a revert commits over existing work"$'\n'"--- output ---"$'\n'"$out"
+assert_contains "$out" "can destroy work" \
+  "the failure must be rule 3's, not an unrelated one"
+pass "rule 3: an unattended git revert is a reviewable line"
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+cat >> "$FIXTURE/bin/fm-fleet-sync.sh" <<'EOF'
+
+git -C "$PROJ" am "$patch"
+EOF
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=1" \
+  "am applies a patch series to the working tree"$'\n'"--- output ---"$'\n'"$out"
+assert_contains "$out" "can destroy work" \
+  "the failure must be rule 3's, not an unrelated one"
+pass "rule 3: an unattended git am is a reviewable line"
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+cat >> "$FIXTURE/bin/fm-fleet-sync.sh" <<'EOF'
+
+git -C "$PROJ" apply "$patch"
+EOF
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=1" \
+  "apply writes the patch into the working tree"$'\n'"--- output ---"$'\n'"$out"
+assert_contains "$out" "can destroy work" \
+  "the failure must be rule 3's, not an unrelated one"
+pass "rule 3: an unattended git apply is a reviewable line"
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+cat >> "$FIXTURE/bin/fm-fleet-sync.sh" <<'EOF'
+
+git -C "$PROJ" read-tree --reset -u HEAD
+EOF
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=1" \
+  "read-tree --reset -u overwrites the index and the working tree"$'\n'"--- output ---"$'\n'"$out"
+assert_contains "$out" "can destroy work" \
+  "the failure must be rule 3's, not an unrelated one"
+pass "rule 3: an unattended git read-tree is a reviewable line"
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+cat >> "$FIXTURE/bin/fm-fleet-sync.sh" <<'EOF'
+
+git -C "$PROJ" sparse-checkout set lib
+EOF
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=1" \
+  "sparse-checkout removes paths from the working tree"$'\n'"--- output ---"$'\n'"$out"
+assert_contains "$out" "can destroy work" \
+  "the failure must be rule 3's, not an unrelated one"
+pass "rule 3: an unattended git sparse-checkout is a reviewable line"
 
 # --- prose stays out of scope -----------------------------------------------
 #
