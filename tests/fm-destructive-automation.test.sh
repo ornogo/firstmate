@@ -64,8 +64,8 @@ assert_contains "$out" "reviewed_call_sites=" \
 # Rule 3's verb class is a list, so the number of sweep lines it licenses is the
 # list's price. Pinning it means widening the class without reading the lines it
 # newly catches fails here rather than passing quietly with a bigger allowlist.
-assert_contains "$out" "reviewed_sweep_lines=9" \
-  "the shipped sweep must license its nine reviewed lines, not silently more"$'\n'"--- output ---"$'\n'"$out"
+assert_contains "$out" "reviewed_sweep_lines=10" \
+  "the shipped sweep must license its ten reviewed lines, not silently more"$'\n'"--- output ---"$'\n'"$out"
 pass "the shipped tree has no unreviewed destructive automation"
 
 # --- the fixture is a faithful basis ----------------------------------------
@@ -496,6 +496,40 @@ for spelling in "${SWEEP_PREFIX_BYPASSES[@]}"; do
     "\`$spelling\` in the startup sweep must be caught"$'\n'"--- output ---"$'\n'"$out"
 done
 pass "rule 3: a target that merely starts with an exempt name still fails"
+
+# A verb list only covers the verbs somebody thought of, and the first list
+# thought only of removals. Every spelling here rewrites a file that is already
+# there without deleting anything and without a truncating `>`, so all eight were
+# rc=0 on the check extracted from `1e16206`; they are rc=1 now, which is this
+# fixture's receipt, and no mutant is needed because the shipped check is the
+# mutant. The last one is the class that no widening of the other three reaches:
+# `python3 -c` carries no destructive verb at all, so the interpreter name is the
+# only static handle there is. `rsync --delete` is deliberately absent - it was
+# already caught at `1e16206`, but by the `-delete` alternative meant for
+# `find`, so putting it here would make the baseline rc=1 and prove nothing.
+# shellcheck disable=SC2016 # These are source lines written into a fixture, not commands this test runs.
+SWEEP_INPLACE_MUTATORS=(
+  'sed -i "" "s/x/y/" "$PROJ/notes.md"'
+  'perl -pi -e "s/x/y/" "$PROJ/notes.md"'
+  'awk -i inplace "{print}" "$PROJ/notes.md"'
+  'ed -s "$PROJ/notes.md" < "$PROJ/cmds"'
+  'patch -p1 -d "$PROJ" < "$PROJ/p.diff"'
+  'sort -o "$PROJ/notes.md" "$PROJ/notes.md"'
+  'gzip -f "$PROJ/notes.md"'
+  'python3 -c "import pathlib; pathlib.Path(p).write_text(s)"'
+)
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+printf '\n' >> "$FIXTURE/bin/fm-fleet-sync.sh"
+printf '%s\n' "${SWEEP_INPLACE_MUTATORS[@]}" >> "$FIXTURE/bin/fm-fleet-sync.sh"
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=1" \
+  "an in-place rewrite in the startup sweep must fail"$'\n'"--- output ---"$'\n'"$out"
+for spelling in "${SWEEP_INPLACE_MUTATORS[@]}"; do
+  assert_contains "$out" "$spelling" \
+    "\`$spelling\` in the startup sweep must be caught"$'\n'"--- output ---"$'\n'"$out"
+done
+pass "rule 3: overwriting a file in place is as destructive as removing it"
 
 # The verb list holds `prune` and `push`, so the two forms the sweep is meant to
 # keep have to be pinned from the other side: `--prune` on git fetch drops

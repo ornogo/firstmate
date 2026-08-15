@@ -252,12 +252,31 @@ ENTRIES
 #
 # "Destroy work" is wider than "delete", and wider than "git". Nothing about an
 # unattended sweep makes `truncate -s 0 "$PROJ/notes.md"` safer than
-# `git -C "$PROJ" checkout -f`, so the plain-shell overwrites are here too:
-# truncate, dd, tee, install, cp, mv and ln all replace a named file's contents,
-# and the redirect that does the same thing is handled by probe_filter's
-# truncating-redirect test rather than by a verb, since it has no verb of its
-# own. Adding those seven cost zero reviewed entries - the sweep writes no files
-# outside git - so there was no tradeoff to weigh, only an omission to close.
+# `git -C "$PROJ" checkout -f`, so the non-git verbs are here too, in the four
+# classes defined just above SWEEP_FORBIDDEN. Naming the classes is the point:
+# what is enforceable is a list, and a list nobody can re-derive is a list that
+# grows one forgotten verb at a time. Asking instead which ordinary commands
+# write over a file that is already there partitions the answer into removal
+# (replace or unlink a named file outright), in-place (read a file and write the
+# result back over it), whole-file (consume a file and leave a different one in
+# its place), and interpreter (run code this list cannot see).
+#
+# The interpreter class is where enumeration stops working. `python3 -c` and
+# `bash -c` carry no destructive verb at all, and no widening of the other three
+# ever reaches them, so they are matched on the interpreter name - the only
+# static handle there is - and a reviewed entry then has to say what the code
+# does. One residue survives even that, and the rule does not claim otherwise: a
+# command whose name is in a variable, `"$EDITOR" "$f"`, has no verb to match.
+#
+# The widening was measured before it was taken, the same way the git verbs
+# were. Thirty verbs across the three classes added this round cost one reviewed
+# entry - `first_line`'s `sed -n`, a read - because the sweep writes no files
+# outside git. Dropping `sed` and `awk` to avoid even that entry costs zero and
+# was rejected: it leaves `sed -i`, the reported spelling, uncaught, which pays
+# the rule's whole purpose to save one line.
+#
+# The redirect that overwrites a file has no verb of its own and is handled by
+# probe_filter's truncating-redirect test rather than by this list.
 #
 # Discarding an uncommitted edit loses it
 # as completely as removing the file does, so the git verbs cover the ref and
@@ -302,7 +321,24 @@ ENTRIES
 # all passed rule 3 unreviewed. That widening cost the sweep nothing, since it
 # has no prose naming a git verb; the four entries below beyond the original
 # three are the cost of the verb class, not of `git.*`.
-SWEEP_FORBIDDEN='(^|[^[:alnum:]_.-])(rm|rmdir|unlink|shred|truncate|dd|tee|install|cp|mv|ln)([[:space:]]|$)|git.*[[:space:]](branch|worktree|clean|gc|prune|reflog|update-ref|reset|checkout|restore|switch|stash|push|merge|rebase|cherry-pick|revert|am|apply|read-tree|sparse-checkout|submodule|filter-branch|replace|notes|tag|update-index|repack|symbolic-ref|remote|bisect|mv)([[:space:]]|$)|-delete([[:space:]]|$)|-exec[[:space:]]+[^[:space:]]*rm'
+# Removal and replacement: rm, rmdir and unlink drop a name; shred, truncate and
+# dd overwrite one in place; tee, install, cp, mv and ln put something else at
+# it.
+SWEEP_VERBS_REMOVE='rm|rmdir|unlink|shred|truncate|dd|tee|install|cp|mv|ln'
+# In-place rewrites: each has an ordinary flag that writes the input back over
+# itself (sed -i, perl -pi, ruby -i, awk -i inplace, ed and ex scripts, patch,
+# sponge), and rsync --delete makes a destination match a source by removing
+# from it.
+SWEEP_VERBS_INPLACE='sed|perl|ruby|awk|ed|ex|patch|sponge|rsync'
+# Whole-file replacement: sort -o writes over its own input, each compressor
+# replaces the file it is handed, and the archivers overwrite whatever they
+# extract onto.
+SWEEP_VERBS_REWRITE='sort|gzip|gunzip|bzip2|bunzip2|xz|unxz|zstd|tar|unzip|zip'
+# Interpreters, matched on the name because the code they run is opaque here.
+# xargs belongs in this class and not in removal: `xargs rm` is already caught by
+# rm, but `xargs -I{} sh -c ...` needs the same handle these do.
+SWEEP_VERBS_INTERP='python|python3|node|bash|sh|zsh|ksh|dash|osascript|xargs'
+SWEEP_FORBIDDEN='(^|[^[:alnum:]_.-])('"$SWEEP_VERBS_REMOVE"'|'"$SWEEP_VERBS_INPLACE"'|'"$SWEEP_VERBS_REWRITE"'|'"$SWEEP_VERBS_INTERP"')([[:space:]]|$)|git.*[[:space:]](branch|worktree|clean|gc|prune|reflog|update-ref|reset|checkout|restore|switch|stash|push|merge|rebase|cherry-pick|revert|am|apply|read-tree|sparse-checkout|submodule|filter-branch|replace|notes|tag|update-index|repack|symbolic-ref|remote|bisect|mv)([[:space:]]|$)|-delete([[:space:]]|$)|-exec[[:space:]]+[^[:space:]]*rm'
 
 # The sweep's reviewed lines, as "<normalized line><TAB><reason>", normalized
 # the same way as ALLOWLIST below. Every reason has to hold for the sweep's
@@ -316,6 +352,7 @@ ref=$(git -C "$PROJ" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/de
 cur=$(git -C "$PROJ" symbolic-ref --short HEAD 2>/dev/null || echo "")	the same read against HEAD, asking which branch is checked out before deciding anything; it writes nothing and its failure path yields the empty string
 if ! git -C "$PROJ" remote get-url origin >/dev/null 2>&1; then	a read: the get-url subcommand prints a remote URL, and the failure branch reports "no origin remote" and returns; remote is flagged for its remove, prune and set-url subcommands, which this line does not use
 if ! merge_output=$(git -C "$PROJ" merge --ff-only "$BASE" 2>&1); then	the only line in the sweep that writes the working tree: --ff-only refuses to merge and exits non-zero unless the local ref is already an ancestor of the base, so it can only advance a branch that has no commits of its own, and the lines above have already proven the tree clean, the branch an ancestor, and the base a real commit; the failure path reports and returns without a second attempt
+printf '%s\n' "$1" | sed -n '1s/[[:space:]]\{1,\}/ /g;1p'	a read: with no -i and no w command, sed -n writes only to stdout; this collapses the whitespace runs in its argument and prints the first line, touching no file
 echo "usage: fm-fleet-sync.sh [<project-dir-or-name>]" >&2	the > is prose inside the usage text, in the placeholder <project-dir-or-name>; the line's only real redirect is >&2, a descriptor duplication that names no file
 echo "$label: removed provably-stale packed-refs lock $lock (age >= ${FLEET_SYNC_PACKED_REFS_LOCK_AGE_SECS}s, no live holder) and retrying fetch" >&2	the > is prose inside the message text, in the comparison >=; the line's only real redirect is >&2, which names no file
 ENTRIES
