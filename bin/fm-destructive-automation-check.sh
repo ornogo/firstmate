@@ -250,7 +250,16 @@ ENTRIES
 # Matching the verb rather than the invocation is what makes an unanticipated
 # spelling fail closed.
 #
-# "Destroy work" is wider than "delete". Discarding an uncommitted edit loses it
+# "Destroy work" is wider than "delete", and wider than "git". Nothing about an
+# unattended sweep makes `truncate -s 0 "$PROJ/notes.md"` safer than
+# `git -C "$PROJ" checkout -f`, so the plain-shell overwrites are here too:
+# truncate, dd, tee, install, cp, mv and ln all replace a named file's contents,
+# and the redirect that does the same thing is handled by probe_filter's
+# truncating-redirect test rather than by a verb, since it has no verb of its
+# own. Adding those seven cost zero reviewed entries - the sweep writes no files
+# outside git - so there was no tradeoff to weigh, only an omission to close.
+#
+# Discarding an uncommitted edit loses it
 # as completely as removing the file does, so the git verbs cover the ref and
 # path removals (branch, worktree, clean, gc, prune, reflog, update-ref, repack,
 # tag, replace, notes), the ones that overwrite or move the working tree or the
@@ -293,7 +302,7 @@ ENTRIES
 # all passed rule 3 unreviewed. That widening cost the sweep nothing, since it
 # has no prose naming a git verb; the four entries below beyond the original
 # three are the cost of the verb class, not of `git.*`.
-SWEEP_FORBIDDEN='(^|[^[:alnum:]_.-])(rm|rmdir|unlink|shred)([[:space:]]|$)|git.*[[:space:]](branch|worktree|clean|gc|prune|reflog|update-ref|reset|checkout|restore|switch|stash|push|merge|rebase|cherry-pick|revert|am|apply|read-tree|sparse-checkout|submodule|filter-branch|replace|notes|tag|update-index|repack|symbolic-ref|remote|bisect|mv)([[:space:]]|$)|-delete([[:space:]]|$)|-exec[[:space:]]+[^[:space:]]*rm'
+SWEEP_FORBIDDEN='(^|[^[:alnum:]_.-])(rm|rmdir|unlink|shred|truncate|dd|tee|install|cp|mv|ln)([[:space:]]|$)|git.*[[:space:]](branch|worktree|clean|gc|prune|reflog|update-ref|reset|checkout|restore|switch|stash|push|merge|rebase|cherry-pick|revert|am|apply|read-tree|sparse-checkout|submodule|filter-branch|replace|notes|tag|update-index|repack|symbolic-ref|remote|bisect|mv)([[:space:]]|$)|-delete([[:space:]]|$)|-exec[[:space:]]+[^[:space:]]*rm'
 
 # The sweep's reviewed lines, as "<normalized line><TAB><reason>", normalized
 # the same way as ALLOWLIST below. Every reason has to hold for the sweep's
@@ -307,6 +316,8 @@ ref=$(git -C "$PROJ" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/de
 cur=$(git -C "$PROJ" symbolic-ref --short HEAD 2>/dev/null || echo "")	the same read against HEAD, asking which branch is checked out before deciding anything; it writes nothing and its failure path yields the empty string
 if ! git -C "$PROJ" remote get-url origin >/dev/null 2>&1; then	a read: the get-url subcommand prints a remote URL, and the failure branch reports "no origin remote" and returns; remote is flagged for its remove, prune and set-url subcommands, which this line does not use
 if ! merge_output=$(git -C "$PROJ" merge --ff-only "$BASE" 2>&1); then	the only line in the sweep that writes the working tree: --ff-only refuses to merge and exits non-zero unless the local ref is already an ancestor of the base, so it can only advance a branch that has no commits of its own, and the lines above have already proven the tree clean, the branch an ancestor, and the base a real commit; the failure path reports and returns without a second attempt
+echo "usage: fm-fleet-sync.sh [<project-dir-or-name>]" >&2	the > is prose inside the usage text, in the placeholder <project-dir-or-name>; the line's only real redirect is >&2, a descriptor duplication that names no file
+echo "$label: removed provably-stale packed-refs lock $lock (age >= ${FLEET_SYNC_PACKED_REFS_LOCK_AGE_SECS}s, no live holder) and retrying fetch" >&2	the > is prose inside the message text, in the comparison >=; the line's only real redirect is >&2, which names no file
 ENTRIES
 )
 
@@ -367,17 +378,39 @@ fail() {
 # the code's first word and turn `git branch -D "$b"` into ` branch -D "$b"`,
 # which BRANCH_RE no longer matches - a miss, which is the direction this check
 # does not get to have.
+#
+# A non-empty $2 adds the truncating-redirect test, and only rule 3 passes it: a
+# redirect destroys the file it names, so it belongs to the sweep's question and
+# not to "does this line delete a branch" or "does it invoke a teardown helper".
+# It is subtractive rather than a pattern, because the dangerous form is the bare
+# one and it is the safe spellings that are enumerable: strip the appends
+# (">>", "&>>", which add and cannot truncate), the descriptor duplications
+# (">&2", "2>&1", ">&-", which name no file), and the writes to /dev/null, and
+# any ">" still standing truncates something. "&>" is deliberately not stripped
+# with the appends - it redirects both streams and truncates while doing it - and
+# ">|" needs no case of its own, since overriding noclobber leaves its ">" behind.
 probe_filter() {
   # shellcheck disable=SC2016 # awk owns every $ expression in this literal program.
-  FM_PROBE_RE=$1 awk '
-    BEGIN { SQ = sprintf("%c", 39); re = ENVIRON["FM_PROBE_RE"] }
+  FM_PROBE_RE=$1 FM_PROBE_REDIR=${2-} awk '
+    BEGIN {
+      SQ = sprintf("%c", 39)
+      re = ENVIRON["FM_PROBE_RE"]
+      redir = ENVIRON["FM_PROBE_REDIR"]
+    }
     {
       probe = $0
       sub(/^[^\t]*\t[^\t]*\t/, "", probe)
       gsub(/"/, "", probe)
       gsub(SQ, "", probe)
       gsub(/\\/, "", probe)
-      if (probe ~ re) { print }
+      if (probe ~ re) { print; next }
+      if (redir != "") {
+        rd = probe
+        gsub(/&?>>/, "", rd)
+        gsub(/>&[0-9-]/, "", rd)
+        gsub(/&?[0-9]?>[[:space:]]*\/dev\/null/, "", rd)
+        if (rd ~ />/) { print }
+      }
     }
   ' || true
 }
@@ -558,7 +591,7 @@ else
     printf '  %s\n' "$norm" >&2
     printf '  The startup sweep runs unattended on every boot. Remove it, or add it to SWEEP_ALLOWLIST in bin/fm-destructive-automation-check.sh with a reason that says why it cannot destroy work.\n' >&2
   done <<EOF
-$(printf '%s\n' "$EXEC_LINES" | grep -E -- "^${SWEEP}${TAB}" | probe_filter "$SWEEP_FORBIDDEN")
+$(printf '%s\n' "$EXEC_LINES" | grep -E -- "^${SWEEP}${TAB}" | probe_filter "$SWEEP_FORBIDDEN" redirect)
 EOF
 
   check_entry_counts "$SWEEP_ALLOWLIST" "$SWEEP_SEEN" SWEEP_ALLOWLIST "rule 3" line

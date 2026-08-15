@@ -64,8 +64,8 @@ assert_contains "$out" "reviewed_call_sites=" \
 # Rule 3's verb class is a list, so the number of sweep lines it licenses is the
 # list's price. Pinning it means widening the class without reading the lines it
 # newly catches fails here rather than passing quietly with a bigger allowlist.
-assert_contains "$out" "reviewed_sweep_lines=7" \
-  "the shipped sweep must license its seven reviewed lines, not silently more"$'\n'"--- output ---"$'\n'"$out"
+assert_contains "$out" "reviewed_sweep_lines=9" \
+  "the shipped sweep must license its nine reviewed lines, not silently more"$'\n'"--- output ---"$'\n'"$out"
 pass "the shipped tree has no unreviewed destructive automation"
 
 # --- the fixture is a faithful basis ----------------------------------------
@@ -376,6 +376,90 @@ for spelling in "${SWEEP_QUALIFIED[@]}"; do
     "\`$spelling\` in the startup sweep must be caught"$'\n'"--- output ---"$'\n'"$out"
 done
 pass "rule 3: a removal named by absolute path in the startup sweep fails"
+
+# Nothing about an unattended sweep makes `truncate -s 0` safer than
+# `git checkout -f`. These replace a named file's contents without naming a
+# removal verb and without going through git at all, so a rule that watched only
+# git and only deletions left the ordinary way to destroy a file wide open.
+# shellcheck disable=SC2016 # These are source lines written into a fixture, not commands this test runs.
+SWEEP_PLAIN_OVERWRITES=(
+  'truncate -s 0 "$PROJ/notes.md"'
+  'dd if=/dev/zero of="$PROJ/notes.md"'
+  'tee "$PROJ/notes.md" < /dev/null'
+  'install /dev/null "$PROJ/notes.md"'
+  'cp -f /dev/null "$PROJ/notes.md"'
+  'mv /tmp/staged "$PROJ/notes.md"'
+  'ln -sf /tmp/staged "$PROJ/notes.md"'
+)
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+printf '\n' >> "$FIXTURE/bin/fm-fleet-sync.sh"
+printf '%s\n' "${SWEEP_PLAIN_OVERWRITES[@]}" >> "$FIXTURE/bin/fm-fleet-sync.sh"
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=1" \
+  "plain-shell overwrites in the startup sweep must fail"$'\n'"--- output ---"$'\n'"$out"
+for spelling in "${SWEEP_PLAIN_OVERWRITES[@]}"; do
+  assert_contains "$out" "$spelling" \
+    "\`$spelling\` in the startup sweep must be caught"$'\n'"--- output ---"$'\n'"$out"
+done
+pass "rule 3: a plain-shell overwrite in the startup sweep fails"
+
+# The redirect is the one destructive form with no verb to match, so it gets its
+# own test rather than an entry in the verb list. The dangerous spelling is the
+# bare one and the safe spellings are the enumerable ones, so the test strips the
+# appends, the descriptor duplications and the writes to /dev/null, and treats
+# whatever `>` is left as a truncation. `&>` is the case worth stating: it is not
+# an append despite the doubled character, and it truncates both streams into the
+# file it names.
+# shellcheck disable=SC2016 # These are source lines written into a fixture, not commands this test runs.
+SWEEP_TRUNCATING_REDIRECTS=(
+  'printf %s "" > "$PROJ/notes.md"'
+  ': > "$PROJ/notes.md"'
+  'cat /tmp/staged &> "$PROJ/notes.md"'
+  'printf %s x >| "$PROJ/notes.md"'
+  'git -C "$PROJ" log --oneline 2> "$PROJ/notes.md"'
+)
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+printf '\n' >> "$FIXTURE/bin/fm-fleet-sync.sh"
+printf '%s\n' "${SWEEP_TRUNCATING_REDIRECTS[@]}" >> "$FIXTURE/bin/fm-fleet-sync.sh"
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=1" \
+  "a truncating redirect in the startup sweep must fail"$'\n'"--- output ---"$'\n'"$out"
+for spelling in "${SWEEP_TRUNCATING_REDIRECTS[@]}"; do
+  assert_contains "$out" "$spelling" \
+    "\`$spelling\` in the startup sweep must be caught"$'\n'"--- output ---"$'\n'"$out"
+done
+pass "rule 3: a truncating redirect in the startup sweep fails"
+
+# The paired legal case. A redirect that appends, names a descriptor rather than
+# a file, or writes to /dev/null destroys nothing, and a redirect test that could
+# not tell those from a truncation would either fail the shipped tree or be
+# switched off. Two of the three are already pinned by the shipped-tree assertion
+# above, because the sweep is full of `>&2` and `>/dev/null` - drop either of
+# those from the test and the shipped tree fails before this fixture is reached.
+# The append is not: the sweep contains no `>>` at all, so this is the only thing
+# standing between an append and a false finding. It is mutation-proved on
+# exactly that mutant - deleting the append strip leaves the shipped tree green
+# and turns this case rc=1. `&>>` is the reason to spell the pair out: `&>` is a
+# truncation despite the ampersand, and doubling the `>` does make this one an
+# append.
+# shellcheck disable=SC2016 # These are source lines written into a fixture, not commands this test runs.
+SWEEP_SAFE_REDIRECTS=(
+  'printf %s x >> "$PROJ/fleet-sync.log"'
+  'printf %s x &>> "$PROJ/fleet-sync.log"'
+  'git -C "$PROJ" status --porcelain >/dev/null 2>&1'
+  'echo "sync complete" >&2'
+  'git -C "$PROJ" rev-parse HEAD 2>&-'
+)
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+printf '\n' >> "$FIXTURE/bin/fm-fleet-sync.sh"
+printf '%s\n' "${SWEEP_SAFE_REDIRECTS[@]}" >> "$FIXTURE/bin/fm-fleet-sync.sh"
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=0" \
+  "appends, descriptor redirects and /dev/null writes must stay legal in the startup sweep"$'\n'"--- output ---"$'\n'"$out"
+pass "rule 3: a redirect that destroys nothing stays legal in the startup sweep"
 
 # The verb list holds `prune` and `push`, so the two forms the sweep is meant to
 # keep have to be pinned from the other side: `--prune` on git fetch drops
