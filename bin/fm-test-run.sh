@@ -396,7 +396,7 @@ tests/fm-claude-stop-autoarm-live-e2e.test.sh 19
 tests/fm-claude-stop-autoarm.test.sh 60521
 tests/fm-codex-continuity-live-e2e.test.sh 19
 tests/fm-daemon.test.sh 15140
-tests/fm-destructive-automation.test.sh 42000
+tests/fm-destructive-automation.test.sh 46200
 tests/fm-documentation-audiences.test.sh 572
 tests/fm-fleet-snapshot-view.test.sh 5902
 tests/fm-fleet-sync.test.sh 16417

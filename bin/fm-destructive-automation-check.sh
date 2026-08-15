@@ -171,20 +171,41 @@ bin/fm-bootstrap.sh	echo "TANGLE: primary checkout on feature branch '$tangle_br
 ENTRIES
 )
 
-# Rule 3 inverted: every removal-capable verb reaching the sweep, whatever its
-# options, so the reviewed lines below are the only ones that may run. Matching
-# the verb rather than the invocation is what makes an unanticipated spelling
-# fail closed. "--prune" on git fetch is deliberately not matched: it drops
-# remote-tracking refs, which hold no work.
-SWEEP_FORBIDDEN='(^|[^[:alnum:]_./-])(rm|rmdir|unlink|shred)([[:space:]]|$)|git[^;|&]*[[:space:]](branch|worktree|clean|gc|prune|reflog)([[:space:]]|$)|-delete([[:space:]]|$)|-exec[[:space:]]+rm'
+# Rule 3 inverted: every verb reaching the sweep that can destroy work, whatever
+# its options, so the reviewed lines below are the only ones that may run.
+# Matching the verb rather than the invocation is what makes an unanticipated
+# spelling fail closed.
+#
+# "Destroy work" is wider than "delete". Discarding an uncommitted edit loses it
+# as completely as removing the file does, so the git verbs cover both the ref
+# and path removals (branch, worktree, clean, gc, prune, reflog, update-ref) and
+# the ones that overwrite or move the working tree (reset, checkout, restore,
+# switch, stash), plus push, which deletes a remote branch by `--delete` or by a
+# colon refspec that names no local side. Each is flagged on the verb alone; a
+# reviewed line says why that occurrence cannot lose anything.
+#
+# "--prune" on git fetch is deliberately not matched: it drops remote-tracking
+# refs, which hold no work. It is spelled with a hyphen before the verb, and the
+# git alternatives all require whitespace there, so `git prune` is caught and
+# `git fetch --prune` is not.
+#
+# The leading boundary excludes the characters that make a longer word - so
+# `confirm ` and `fm-rm ` are not removals - but deliberately allows `/`, so a
+# path-qualified `/bin/rm -rf` is caught. Excluding `/` was a hole: naming the
+# absolute path is an ordinary way to invoke a command, and the sweep is exactly
+# where an unattended one would sit. The cost is that a line ending a path in
+# `/rm` is flagged too, which is the fail-closed direction and costs nothing in
+# the shipped sweep.
+SWEEP_FORBIDDEN='(^|[^[:alnum:]_.-])(rm|rmdir|unlink|shred)([[:space:]]|$)|git[^;|&]*[[:space:]](branch|worktree|clean|gc|prune|reflog|update-ref|reset|checkout|restore|switch|stash|push)([[:space:]]|$)|-delete([[:space:]]|$)|-exec[[:space:]]+[^[:space:]]*rm'
 
 # The sweep's reviewed lines, as "<normalized line><TAB><reason>", normalized
-# the same way as ALLOWLIST below. Both reasons have to hold for the sweep's
+# the same way as ALLOWLIST below. Every reason has to hold for the sweep's
 # unattended context: nothing here may destroy work.
 SWEEP_ALLOWLIST=$(
   cat <<'ENTRIES'
 if ! rm -f "$lock"; then	a single non-recursive rm -f of a provably-stale .git/packed-refs.lock, which holds no work
 git -C "$PROJ" worktree list --porcelain 2>/dev/null \	a read: it lists worktrees and removes none
+if ! git -C "$PROJ" checkout --quiet "$DEFAULT" 2>/dev/null; then	re-attaches a detached HEAD the branch above has already proven clean, free of unique commits, and an ancestor of the base; --quiet is not --force, so git aborts rather than overwrite, and every other drift is reported and left untouched
 ENTRIES
 )
 
@@ -325,7 +346,7 @@ else
     if printf '%s\n' "$SWEEP_ALLOWLIST" | grep -Fq -- "${norm}${TAB}"; then
       continue
     fi
-    fail "${SWEEP}:${lineno} can remove a branch, a worktree, or a path, and is not one of the startup sweep's reviewed lines:"
+    fail "${SWEEP}:${lineno} can destroy work - remove a branch, a worktree, or a path, or overwrite the working tree - and is not one of the startup sweep's reviewed lines:"
     printf '  %s\n' "$norm" >&2
     printf '  The startup sweep runs unattended on every boot. Remove it, or add it to SWEEP_ALLOWLIST in bin/fm-destructive-automation-check.sh with a reason that says why it cannot destroy work.\n' >&2
   done <<EOF

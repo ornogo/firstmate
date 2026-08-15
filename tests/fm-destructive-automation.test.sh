@@ -323,6 +323,75 @@ for spelling in "${SWEEP_SPELLINGS[@]}"; do
 done
 pass "rule 3: every removal-capable spelling in the startup sweep fails"
 
+# Destroying work is wider than deleting it. Each of these overwrites or moves
+# the working tree, or drops a ref, without naming a removal verb, so a rule
+# that only watched for deletions would let an unattended boot discard whatever
+# was uncommitted in the clone.
+# shellcheck disable=SC2016 # These are source lines written into a fixture, not commands this test runs.
+SWEEP_OVERWRITES=(
+  'git -C "$PROJ" reset --hard "$BASE"'
+  'git -C "$PROJ" checkout -f "$DEFAULT"'
+  'git -C "$PROJ" restore --staged --worktree .'
+  'git -C "$PROJ" switch --discard-changes "$DEFAULT"'
+  'git -C "$PROJ" stash clear'
+  'git -C "$PROJ" update-ref -d "refs/heads/$b"'
+  'git -C "$PROJ" push origin :"refs/heads/$b"'
+)
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+printf '\n' >> "$FIXTURE/bin/fm-fleet-sync.sh"
+printf '%s\n' "${SWEEP_OVERWRITES[@]}" >> "$FIXTURE/bin/fm-fleet-sync.sh"
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=1" \
+  "working-tree-overwriting git verbs in the startup sweep must fail"$'\n'"--- output ---"$'\n'"$out"
+for spelling in "${SWEEP_OVERWRITES[@]}"; do
+  assert_contains "$out" "$spelling" \
+    "\`$spelling\` in the startup sweep must be caught"$'\n'"--- output ---"$'\n'"$out"
+done
+pass "rule 3: a git verb that overwrites the working tree or drops a ref fails"
+
+# Naming a command by absolute path is an ordinary way to invoke it, and the
+# unattended sweep is exactly where one would sit. The boundary before the
+# removal verbs must therefore admit the `/`, or every one of these is a hole.
+# shellcheck disable=SC2016 # These are source lines written into a fixture, not commands this test runs.
+SWEEP_QUALIFIED=(
+  '/bin/rm -rf "$PROJ/.git/rebase-merge"'
+  '/usr/bin/rmdir "$PROJ/.git/worktrees/$wt"'
+  'find "$PROJ" -type d -exec /bin/rm -rf {} +'
+)
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+printf '\n' >> "$FIXTURE/bin/fm-fleet-sync.sh"
+printf '%s\n' "${SWEEP_QUALIFIED[@]}" >> "$FIXTURE/bin/fm-fleet-sync.sh"
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=1" \
+  "a path-qualified removal in the startup sweep must fail"$'\n'"--- output ---"$'\n'"$out"
+for spelling in "${SWEEP_QUALIFIED[@]}"; do
+  assert_contains "$out" "$spelling" \
+    "\`$spelling\` in the startup sweep must be caught"$'\n'"--- output ---"$'\n'"$out"
+done
+pass "rule 3: a removal named by absolute path in the startup sweep fails"
+
+# The verb list holds `prune` and `push`, so the two forms the sweep is meant to
+# keep have to be pinned from the other side: `--prune` on git fetch drops
+# remote-tracking refs, which hold no work, and a read is a read. Both are
+# spelled with no whitespace-preceded destructive verb, which is what keeps them
+# out - so a future widening that reaches them breaks this case first.
+# shellcheck disable=SC2016 # These are source lines written into a fixture, not commands this test runs.
+SWEEP_LEGAL=(
+  'git -C "$PROJ" fetch --prune origin'
+  'git -C "$PROJ" status --porcelain'
+  'git -C "$PROJ" rev-parse --verify --quiet HEAD'
+)
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+printf '\n' >> "$FIXTURE/bin/fm-fleet-sync.sh"
+printf '%s\n' "${SWEEP_LEGAL[@]}" >> "$FIXTURE/bin/fm-fleet-sync.sh"
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=0" \
+  "git fetch --prune and read-only git must stay legal in the startup sweep"$'\n'"--- output ---"$'\n'"$out"
+pass "rule 3: git fetch --prune and read-only git stay legal in the startup sweep"
+
 # The sweep's one permitted removal is a provably-stale packed-refs lock: a
 # single non-recursive rm -f of a lock file, holding no work. It is permitted as
 # that exact reviewed line, not as a class - "any rm -f is fine here" is how the
