@@ -446,6 +446,23 @@ assert_contains "$out" "rc=0" \
   "comments naming destructive actions must not trip the check"$'\n'"--- output ---"$'\n'"$out"
 pass "prose: whole-line and trailing comments naming destructive actions are ignored"
 
+# Regression fixture for a false positive the cut had while it required
+# whitespace after the `#`: bash starts a comment at `#` alone, so `echo boot
+# #note` is a comment to bash and had to be one here too. It was not, so a
+# sentence written without the courtesy space was read as code, and prose naming
+# a helper failed a check that claims to ignore prose. The cut now takes
+# everything from the first whitespace-preceded `#`, matching bash.
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+cat >> "$FIXTURE/bin/fm-bootstrap.sh" <<'EOF'
+
+echo boot   #bin/fm-teardown.sh is the founder toolkit
+EOF
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=0" \
+  "a trailing comment with no space after the hash is still a comment"$'\n'"--- output ---"$'\n'"$out"
+pass "prose: a trailing comment with no space after the hash is ignored, as bash reads it"
+
 # The stated cost of reading a trailing comment only on an unambiguous line: on
 # a line carrying a quote, the tail is kept and read as code, so prose there
 # that names a destructive helper fails. This is the trade, pinned so it is a
@@ -507,6 +524,25 @@ assert_contains "$out" "rc=1" \
 assert_contains "$out" "not one of the startup sweep's reviewed lines" \
   "the failure must be rule 3's, not an unrelated one"
 pass "comment cut: a quoted hash cannot hide a removal from rule 3"
+
+# The other way a whitespace-preceded `#` is not a comment, and the reason the
+# cut is withheld from a line carrying `${` as well as one carrying a quote: a
+# parameter expansion whose pattern contains one. `cmd=${cmd%%  #*}` is a real
+# line in bin/fm-bootstrap.sh, so this is a construct the fork writes, not a
+# hypothetical - and it carries no quote, so a cut guarded on quotes alone would
+# take it, keep `cmd=${cmd%%`, and delete whatever was written after it.
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+cat >> "$FIXTURE/bin/fm-bootstrap.sh" <<'EOF'
+
+cmd=${cmd%% #*}; $SCRIPT_DIR/fm-teardown.sh $id --force
+EOF
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=1" \
+  "a hash inside a parameter expansion must not hide a teardown call"$'\n'"--- output ---"$'\n'"$out"
+assert_contains "$out" "reaches a destructive helper and is not in the reviewed allowlist" \
+  "the failure must be rule 4's, not an unrelated one"
+pass "comment cut: a hash inside a parameter expansion cannot hide a destructive call site"
 
 # --- an entry licenses one occurrence ---------------------------------------
 #

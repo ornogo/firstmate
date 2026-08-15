@@ -65,20 +65,30 @@
 # so documenting a destructive action never trips the check while invoking one
 # does.
 #
-# That cut is quote-blind on its own, and a quote-blind cut fails open:
+# A naive cut is quote-blind, and a quote-blind cut fails open:
 # `printf '%s' ' # '; "$SCRIPT_DIR/fm-teardown.sh" "$id" --force` is a harmless
 # command followed by a real teardown, and cutting at the first ` # ` deletes
 # the teardown before any rule sees it. Nothing here parses shell to tell a
 # quoted `#` from a comment, because that is the same losing game as modelling
-# git's option grammar and it loses the same way. The cut is taken only on a
-# line carrying no quote character at all, where no `#` can be inside a string
-# and the read is sound without a parser. Any line with a quote on it is kept
-# whole and read as code.
+# git's option grammar and it loses the same way.
 #
-# The cost is that a trailing comment on a line with a quoted string is read as
-# code, so prose there naming a destructive helper needs a reviewed entry. A
-# whole-line comment is never ambiguous and is always dropped, so the fix is to
-# put the sentence on its own line, which costs nothing.
+# So the cut is taken only where it is sound without a parser. On a line with no
+# quote character on it, no `#` can be inside a string. That leaves exactly one
+# construct where a whitespace-preceded `#` is still not a comment: a parameter
+# expansion whose pattern contains one, as in `cmd=${cmd%%  #*}` - which is a
+# real line in `bin/fm-bootstrap.sh`, not a hypothetical, and verified against
+# bash to strip a suffix rather than start a comment. Writing one needs `${`, so
+# a line carrying neither a quote nor `${` cannot hold a non-comment `#`, and on
+# such a line everything from the first whitespace-preceded `#` is comment. Note
+# that this is `#` with no whitespace required after it: `echo boot #note` is a
+# comment to bash, so it must be one here too, or the check invents findings in
+# prose. Any line with a quote or a `${` on it is kept whole and read as code.
+#
+# The cost is that a trailing comment on a line that also carries a quoted
+# string or a parameter expansion is read as code, so prose there naming a
+# destructive helper needs a reviewed entry. A whole-line comment is never
+# ambiguous and is always dropped, so the fix is to put the sentence on its own
+# line, which costs nothing.
 #
 # Two files are the contract's own text rather than code it governs: this
 # script, and tests/fm-destructive-automation.test.sh. Both have to name the
@@ -235,11 +245,12 @@ EOF
 
 # Every tracked bin/ script as "<path><TAB><lineno><TAB><code>", one executable
 # line each. Whole-line comments (the shebang among them) are dropped and
-# " # trailing comment" tails are cut, in one pass so the scan stays cheap.
+# trailing-comment tails are cut, in one pass so the scan stays cheap.
 #
-# The tail is cut only on a line with no quote character on it: on such a line a
-# whitespace-delimited `#` cannot be inside a string, so the cut is sound with
-# no shell parsing. A quoted `#` on any other line stays, and the line is read
+# The tail is cut only on a line carrying neither a quote nor `${`: on such a
+# line a whitespace-preceded `#` can be neither inside a string nor inside a
+# parameter expansion's pattern, which are the only two ways it is not a
+# comment, so the cut is sound with no shell parsing. Any other line is read
 # whole. See the header for why the conservative read is the only safe one here.
 EXEC_LINES=$(
   # shellcheck disable=SC2016 # awk owns every $ expression in this literal program.
@@ -251,9 +262,8 @@ EXEC_LINES=$(
           sub(/^[ \t]+/, "", probe)
           if (probe ~ /^#/ || probe == "") next
           code = $0
-          if (index(code, SQ) == 0 && index(code, "\"") == 0) {
-            sub(/[ \t]#[ \t].*$/, "", code)
-            sub(/[ \t]#$/, "", code)
+          if (index(code, SQ) == 0 && index(code, "\"") == 0 && index(code, "${") == 0) {
+            sub(/[ \t]#.*$/, "", code)
           }
           gsub(/\t/, " ", code)
           print FILENAME "\t" FNR "\t" code
