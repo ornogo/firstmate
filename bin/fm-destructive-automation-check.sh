@@ -33,6 +33,19 @@
 # comment, and the tail of a "code  # trailing comment" line, are stripped
 # first, so documenting a destructive action never trips the check while
 # invoking one does.
+#
+# Two files are the contract's own text rather than code it governs: this
+# script, and tests/fm-destructive-automation.test.sh. Both have to name the
+# banned function and the destructive helpers in order to ban them and to prove
+# the ban works, so rule 1 skips both by path and rule 4 skips this script. The
+# banned name therefore appears nowhere in this fork except in the check that
+# bans it and the test that proves the ban. The exclusion is by exact path, not
+# by wording: the same words in any other file still fail.
+#
+# What that costs, stated plainly: rule 4 does not audit this script's own call
+# sites, so a change to either file is reviewed as a change to the rule, not as
+# ordinary code. Rule 2 still covers this script, so branch deletion added here
+# is still caught.
 set -eu
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -65,6 +78,11 @@ TEARDOWN=bin/fm-teardown.sh
 
 # The startup sweep bin/fm-bootstrap.sh backgrounds on every boot.
 SWEEP=bin/fm-fleet-sync.sh
+
+# This check and its test, which state the rules and so must name what the
+# rules ban. See the header for what excluding them costs.
+SELF=bin/fm-destructive-automation-check.sh
+SELF_TEST=tests/fm-destructive-automation.test.sh
 
 # Helpers whose whole job is destructive or irreversible. A reference to one in
 # executable position is a call site until the allowlist says otherwise.
@@ -127,7 +145,7 @@ SCANNED=$(git ls-files -- 'bin/*' | wc -l | tr -d ' ')
 
 # --- rule 1: prune_gone_branches is gone -----------------------------------
 
-PRUNE_HITS=$(git grep -n -- 'prune_gone_branches' || true)
+PRUNE_HITS=$(git grep -n -e 'prune_gone_branches' -- ":!$SELF" ":!$SELF_TEST" || true)
 if [ -n "$PRUNE_HITS" ]; then
   fail "prune_gone_branches must not exist in this fork; it force-deleted local branches on any closed PR:"
   printf '%s\n' "$PRUNE_HITS" | sed 's/^/  /' >&2
@@ -166,6 +184,9 @@ fi
 while IFS= read -r hit; do
   [ -n "$hit" ] || continue
   file=${hit%%"$TAB"*}
+  # This script names every destructive helper in DESTRUCTIVE_RE and in the
+  # allowlist below, so auditing itself would flag its own rule text.
+  [ "$file" != "$SELF" ] || continue
   rest=${hit#*"$TAB"}
   lineno=${rest%%"$TAB"*}
   code=${rest#*"$TAB"}

@@ -56,10 +56,19 @@ pass "the shipped tree has no unreviewed destructive automation"
 # --- the fixture is a faithful basis ----------------------------------------
 
 FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+
+# The check is itself a tracked bin/ script, so it is inside its own scan basis.
+# It was not while it was still untracked, and that gap is what let it report a
+# clean run over a tree it would fail the moment it was committed. Assert the
+# fixture holds it, so a future change that drops it from the basis fails here
+# rather than restoring that false green.
+[ -f "$FIXTURE/bin/fm-destructive-automation-check.sh" ] || \
+  fail "the fixture must contain the check script itself; the check has to survive scanning its own source"
+
 out=$(run_check "$FIXTURE")
 assert_contains "$out" "rc=0" \
   "an unmutated copy of tracked bin/ must pass, or every mutation below proves nothing"$'\n'"--- output ---"$'\n'"$out"
-pass "an unmutated copy of tracked bin/ passes the check"
+pass "an unmutated copy of tracked bin/, the check's own source included, passes the check"
 
 # --- rule 1: prune_gone_branches cannot come back ---------------------------
 #
@@ -81,6 +90,34 @@ assert_contains "$out" "rc=1" "reintroducing prune_gone_branches must fail the c
 assert_contains "$out" "prune_gone_branches must not exist in this fork" \
   "the failure must name prune_gone_branches"
 pass "rule 1: reintroducing prune_gone_branches fails"
+
+# Rule 1 reads prose as well as code, so the check that bans the name has to be
+# allowed to write it - otherwise it fails on its own rule text. The exclusion
+# is by exact path, and these two cases are what say so: the same words are
+# legal in the check and illegal one file over.
+
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+cat >> "$FIXTURE/bin/fm-destructive-automation-check.sh" <<'EOF'
+
+# prune_gone_branches is the surface this rule exists to keep out.
+EOF
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=0" \
+  "the check that bans prune_gone_branches must be allowed to name it"$'\n'"--- output ---"$'\n'"$out"
+pass "rule 1: the check may name the function it bans"
+
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+cat >> "$FIXTURE/bin/fm-teardown.sh" <<'EOF'
+
+# prune_gone_branches would be handy here.
+EOF
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=1" \
+  "naming prune_gone_branches outside the check must still fail, even in a comment"
+assert_contains "$out" "bin/fm-teardown.sh" "the failure must name the offending file"
+pass "rule 1: the exclusion is by exact path, not by wording"
 
 # --- rule 2: branch deletion stays inside founder-run teardown --------------
 
@@ -109,6 +146,23 @@ out=$(run_check "$FIXTURE")
 assert_contains "$out" "rc=0" \
   "founder-run teardown must still be allowed to delete a branch"$'\n'"--- output ---"$'\n'"$out"
 pass "rule 2: founder-run teardown may still delete a branch"
+
+# Rules 1 and 4 skip the check's own source because it has to name what it
+# bans. That exemption is narrow on purpose: rule 2 names no helper, so nothing
+# about it is self-referential and the check stays under it like any other
+# script. Without this case, "skip the check's own file" could quietly widen
+# into "the check audits everything but itself".
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+cat >> "$FIXTURE/bin/fm-destructive-automation-check.sh" <<'EOF'
+
+git -C "$PROJ" branch -D -- "$stale"
+EOF
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=1" "the check must not be exempt from the branch-deletion rule"
+assert_contains "$out" "bin/fm-destructive-automation-check.sh:" \
+  "the failure must name the check's own source"
+pass "rule 2: the check audits its own source too"
 
 # --- rule 3: the startup sweep deletes nothing ------------------------------
 #
