@@ -51,10 +51,34 @@
 # the line cannot delete a branch, which is the question the check exists to
 # force.
 #
+# Every allowlist below licenses exactly one occurrence. An entry does not say
+# "this text is approved", it says "this occurrence is approved": a second copy
+# of an approved line is a second call site nobody read, sitting in whatever
+# control flow the copy landed in, which is exactly the new automatic caller
+# these rules exist to catch. Zero occurrences fails too, because a stale entry
+# is the same hole on a delay - it sits there licensing a line that is gone,
+# ready to approve it silently the day it comes back. Neither count is a
+# judgement call, so both fail, with the count in the message.
+#
 # Prose is out of scope. Rules 2-4 read only executable lines: a whole-line
-# comment, and the tail of a "code  # trailing comment" line, are stripped
-# first, so documenting a destructive action never trips the check while
-# invoking one does.
+# comment is dropped, and the tail of a "code  # trailing comment" line is cut,
+# so documenting a destructive action never trips the check while invoking one
+# does.
+#
+# That cut is quote-blind on its own, and a quote-blind cut fails open:
+# `printf '%s' ' # '; "$SCRIPT_DIR/fm-teardown.sh" "$id" --force` is a harmless
+# command followed by a real teardown, and cutting at the first ` # ` deletes
+# the teardown before any rule sees it. Nothing here parses shell to tell a
+# quoted `#` from a comment, because that is the same losing game as modelling
+# git's option grammar and it loses the same way. The cut is taken only on a
+# line carrying no quote character at all, where no `#` can be inside a string
+# and the read is sound without a parser. Any line with a quote on it is kept
+# whole and read as code.
+#
+# The cost is that a trailing comment on a line with a quoted string is read as
+# code, so prose there naming a destructive helper needs a reviewed entry. A
+# whole-line comment is never ambiguous and is always dropped, so the fix is to
+# put the sentence on its own line, which costs nothing.
 #
 # Two files are the contract's own text rather than code it governs: this
 # script, and tests/fm-destructive-automation.test.sh. Both have to name the
@@ -101,6 +125,8 @@ done
 cd "$ROOT" || { echo "fm-destructive-automation-check: cannot enter root $ROOT" >&2; exit 2; }
 
 TAB=$(printf '\t')
+NL='
+'
 
 # The teardown path a founder runs by hand. It is the ONLY sanctioned home for
 # branch deletion, and nothing reaches it automatically.
@@ -178,20 +204,57 @@ fail() {
   FAILURES=$((FAILURES + 1))
 }
 
+# One entry, one occurrence - see the header for why both a duplicate and a
+# stale entry are the same fail-open hole. Takes the list, the lines that
+# actually reached that list's allowlist test, and the list's name. Each rule
+# builds its seen-list inside its own loop, after its own exclusions, so the two
+# sides are compared over identical input.
+check_entry_counts() {
+  entries=$1
+  seen=$2
+  list_name=$3
+  rule=$4
+  noun=$5
+  while IFS= read -r entry; do
+    [ -n "$entry" ] || continue
+    key=${entry%"$TAB"*}
+    count=$(printf '%s' "$seen" | grep -Fxc -- "$key" || true)
+    if [ "$count" -eq 1 ]; then
+      continue
+    fi
+    if [ "$count" -eq 0 ]; then
+      fail "$list_name has an entry that $rule matched no $noun for; a stale entry re-licenses the line the day it comes back, so delete it:"
+    else
+      fail "$list_name has an entry that $rule matched $count times; each entry licenses one $noun, and a copy of a reviewed line is a line nobody read:"
+    fi
+    printf '  %s\n' "$(printf '%s' "$key" | tr "$TAB" ' ')" >&2
+  done <<EOF
+$entries
+EOF
+}
+
 # Every tracked bin/ script as "<path><TAB><lineno><TAB><code>", one executable
 # line each. Whole-line comments (the shebang among them) are dropped and
 # " # trailing comment" tails are cut, in one pass so the scan stays cheap.
+#
+# The tail is cut only on a line with no quote character on it: on such a line a
+# whitespace-delimited `#` cannot be inside a string, so the cut is sound with
+# no shell parsing. A quoted `#` on any other line stays, and the line is read
+# whole. See the header for why the conservative read is the only safe one here.
 EXEC_LINES=$(
   # shellcheck disable=SC2016 # awk owns every $ expression in this literal program.
   git ls-files -z -- 'bin/*' \
     | xargs -0 awk '
+        BEGIN { SQ = sprintf("%c", 39) }
         {
           probe = $0
           sub(/^[ \t]+/, "", probe)
           if (probe ~ /^#/ || probe == "") next
           code = $0
-          sub(/[ \t]#[ \t].*$/, "", code)
-          sub(/[ \t]#$/, "", code)
+          if (index(code, SQ) == 0 && index(code, "\"") == 0) {
+            sub(/[ \t]#[ \t].*$/, "", code)
+            sub(/[ \t]#$/, "", code)
+          }
           gsub(/\t/, " ", code)
           print FILENAME "\t" FNR "\t" code
         }
@@ -211,6 +274,7 @@ fi
 
 # --- rule 2: branch deletion lives only in founder-run teardown -------------
 
+BRANCH_SEEN=""
 while IFS= read -r hit; do
   [ -n "$hit" ] || continue
   file=${hit%%"$TAB"*}
@@ -223,6 +287,7 @@ while IFS= read -r hit; do
   rest=${hit#*"$TAB"}
   lineno=${rest%%"$TAB"*}
   norm=$(printf '%s\n' "${rest#*"$TAB"}" | awk '{ $1 = $1; print }')
+  BRANCH_SEEN="${BRANCH_SEEN}${file}${TAB}${norm}${NL}"
   if printf '%s\n' "$BRANCH_ALLOWLIST" | grep -Fq -- "${file}${TAB}${norm}${TAB}"; then
     continue
   fi
@@ -233,16 +298,20 @@ done <<EOF
 $(printf '%s\n' "$EXEC_LINES" | grep -E -- "$BRANCH_RE" || true)
 EOF
 
+check_entry_counts "$BRANCH_ALLOWLIST" "$BRANCH_SEEN" BRANCH_ALLOWLIST "rule 2" line
+
 # --- rule 3: the startup sweep never deletes --------------------------------
 
 if [ ! -f "$SWEEP" ]; then
   fail "$SWEEP is missing; the startup-sweep rule cannot be checked"
 else
+  SWEEP_SEEN=""
   while IFS= read -r hit; do
     [ -n "$hit" ] || continue
     rest=${hit#*"$TAB"}
     lineno=${rest%%"$TAB"*}
     norm=$(printf '%s\n' "${rest#*"$TAB"}" | awk '{ $1 = $1; print }')
+    SWEEP_SEEN="${SWEEP_SEEN}${norm}${NL}"
     if printf '%s\n' "$SWEEP_ALLOWLIST" | grep -Fq -- "${norm}${TAB}"; then
       continue
     fi
@@ -252,10 +321,13 @@ else
   done <<EOF
 $(printf '%s\n' "$EXEC_LINES" | grep -E -- "^${SWEEP}${TAB}" | grep -E -- "$SWEEP_FORBIDDEN" || true)
 EOF
+
+  check_entry_counts "$SWEEP_ALLOWLIST" "$SWEEP_SEEN" SWEEP_ALLOWLIST "rule 3" line
 fi
 
 # --- rule 4: every destructive call site is reviewed ------------------------
 
+CALL_SEEN=""
 while IFS= read -r hit; do
   [ -n "$hit" ] || continue
   file=${hit%%"$TAB"*}
@@ -280,6 +352,7 @@ while IFS= read -r hit; do
   [[ $code =~ $DESTRUCTIVE_RE ]] || continue
 
   norm=$(printf '%s\n' "$code" | awk '{ $1 = $1; print }')
+  CALL_SEEN="${CALL_SEEN}${file}${TAB}${norm}${NL}"
   if ! printf '%s\n' "$ALLOWLIST" | grep -Fq -- "${file}${TAB}${norm}${TAB}"; then
     fail "${file}:${lineno} reaches a destructive helper and is not in the reviewed allowlist:"
     printf '  %s\n' "$norm" >&2
@@ -288,6 +361,8 @@ while IFS= read -r hit; do
 done <<EOF
 $(printf '%s\n' "$EXEC_LINES" | grep -E -- "$DESTRUCTIVE_RE" || true)
 EOF
+
+check_entry_counts "$ALLOWLIST" "$CALL_SEEN" ALLOWLIST "rule 4" "call site"
 
 # --- verdict ----------------------------------------------------------------
 

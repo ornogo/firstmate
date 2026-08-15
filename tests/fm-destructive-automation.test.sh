@@ -338,20 +338,29 @@ assert_contains "$out" "rc=1" \
   "a new unreviewed rm in the startup sweep must fail even in a non-recursive form"$'\n'"--- output ---"$'\n'"$out"
 pass "rule 3: the reviewed removal is a line, not a licence for the verb"
 
-# The reviewed line itself has to stay legal, or the sweep could not recover
-# from an orphaned lock at all and rule 3 would be banning the action outright.
+# A second copy of the reviewed lock removal is a second removal, and the copy
+# is somewhere nobody read: the reason on that entry is that THAT lock is
+# provably stale, which says nothing about a lock somewhere else in the sweep.
+# The reviewed line staying legal is proved by the unmutated fixture above,
+# which contains it and passes; this case proves the approval does not travel
+# with the text.
 FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
 cat >> "$FIXTURE/bin/fm-fleet-sync.sh" <<'EOF'
 
-      if ! rm -f "$lock"; then
-        echo "could not clear the stale lock" >&2
-      fi
+reap_any_lock() {
+  lock=$1
+  if ! rm -f "$lock"; then
+    echo "could not clear the lock" >&2
+  fi
+}
 EOF
 git -C "$FIXTURE" add -A >/dev/null 2>&1
 out=$(run_check "$FIXTURE")
-assert_contains "$out" "rc=0" \
-  "the sweep's reviewed lock removal must stay legal"$'\n'"--- output ---"$'\n'"$out"
-pass "rule 3: the reviewed stale-lock removal stays legal"
+assert_contains "$out" "rc=1" \
+  "a second copy of the reviewed lock removal must fail"$'\n'"--- output ---"$'\n'"$out"
+assert_contains "$out" "SWEEP_ALLOWLIST has an entry that rule 3 matched 2 times" \
+  "the failure must say the entry matched more than once"$'\n'"--- output ---"$'\n'"$out"
+pass "rule 3: an entry licenses one occurrence, not every copy of its text"
 
 # --- rule 4: every destructive call site is reviewed ------------------------
 
@@ -429,13 +438,126 @@ FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
 cat >> "$FIXTURE/bin/fm-bootstrap.sh" <<'EOF'
 
 # Never do this here: "$SCRIPT_DIR/fm-teardown.sh" "$id", or git branch -D "$b".
-echo "boot"   # bin/fm-merge-local.sh and git branch -D are the founder's, not ours
+echo boot   # bin/fm-merge-local.sh and git branch -D belong to the founder
 EOF
 git -C "$FIXTURE" add -A >/dev/null 2>&1
 out=$(run_check "$FIXTURE")
 assert_contains "$out" "rc=0" \
   "comments naming destructive actions must not trip the check"$'\n'"--- output ---"$'\n'"$out"
 pass "prose: whole-line and trailing comments naming destructive actions are ignored"
+
+# The stated cost of reading a trailing comment only on an unambiguous line: on
+# a line carrying a quote, the tail is kept and read as code, so prose there
+# that names a destructive helper fails. This is the trade, pinned so it is a
+# decision rather than a surprise - and the escape hatch is free, because the
+# whole-line comment in the case above is dropped whatever it quotes.
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+cat >> "$FIXTURE/bin/fm-bootstrap.sh" <<'EOF'
+
+echo "boot"   # bin/fm-teardown.sh is the founder's, not ours
+EOF
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=1" \
+  "a trailing comment on a quoted line is read as code, by design"$'\n'"--- output ---"$'\n'"$out"
+pass "prose: a trailing comment on a quoted line is read as code, and that cost is pinned"
+
+# --- the comment cut cannot be used to hide code ----------------------------
+#
+# Regression fixtures for a fail-open the cut had while it was quote-blind: a
+# quoted `#` earlier on the line made everything after it look like a comment,
+# so a real command written after one was deleted before any rule saw it. One
+# fixture per rule, because the cut feeds all three.
+
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+cat >> "$FIXTURE/bin/fm-bootstrap.sh" <<'EOF'
+
+printf '%s' ' # ' ; "$SCRIPT_DIR/fm-teardown.sh" "$id" --force
+EOF
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=1" \
+  "a quoted hash must not hide a teardown call from rule 4"$'\n'"--- output ---"$'\n'"$out"
+assert_contains "$out" "reaches a destructive helper and is not in the reviewed allowlist" \
+  "the failure must be rule 4's, not an unrelated one"
+pass "comment cut: a quoted hash cannot hide a destructive call site from rule 4"
+
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+cat >> "$FIXTURE/bin/fm-bootstrap.sh" <<'EOF'
+
+printf '%s' ' # ' ; git branch -D "$stale"
+EOF
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=1" \
+  "a quoted hash must not hide a branch deletion from rule 2"$'\n'"--- output ---"$'\n'"$out"
+assert_contains "$out" "runs git branch, which can delete one" \
+  "the failure must be rule 2's, not an unrelated one"
+pass "comment cut: a quoted hash cannot hide a branch deletion from rule 2"
+
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+cat >> "$FIXTURE/bin/fm-fleet-sync.sh" <<'EOF'
+
+printf '%s' ' # ' ; rm -rf "$wt"
+EOF
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=1" \
+  "a quoted hash must not hide a removal from rule 3"$'\n'"--- output ---"$'\n'"$out"
+assert_contains "$out" "not one of the startup sweep's reviewed lines" \
+  "the failure must be rule 3's, not an unrelated one"
+pass "comment cut: a quoted hash cannot hide a removal from rule 3"
+
+# --- an entry licenses one occurrence ---------------------------------------
+#
+# Regression fixtures for a fail-open every allowlist had while approval was
+# keyed on text alone: a reviewed line copied into new control flow inherited
+# the original's approval, which is exactly what a new automatic caller looks
+# like. Rule 3's copy case is above, next to its own rule.
+
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+cat >> "$FIXTURE/bin/fm-remote-secondmate-control.sh" <<'EOF'
+
+auto_reaper() {
+  "$SCRIPT_DIR/fm-teardown.sh" "$id" --force
+}
+EOF
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=1" \
+  "a copy of a reviewed call site in unreviewed control flow must fail"$'\n'"--- output ---"$'\n'"$out"
+assert_contains "$out" "ALLOWLIST has an entry that rule 4 matched 2 times" \
+  "the failure must say the entry matched more than once"$'\n'"--- output ---"$'\n'"$out"
+pass "occurrence: a copy of a reviewed call site is an unreviewed call site"
+
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+cat >> "$FIXTURE/bin/fm-bootstrap.sh" <<'EOF'
+
+echo "TANGLE: primary checkout on feature branch '$tangle_branch' (expected '$tangle_default'); the work is safe on that ref - restore the primary with: git -C $FM_ROOT checkout $tangle_default, then re-validate the branch in a proper worktree"
+EOF
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=1" \
+  "a copy of the reviewed branch line must fail"$'\n'"--- output ---"$'\n'"$out"
+assert_contains "$out" "BRANCH_ALLOWLIST has an entry that rule 2 matched 2 times" \
+  "the failure must say the entry matched more than once"$'\n'"--- output ---"$'\n'"$out"
+pass "occurrence: a copy of the reviewed branch line is an unreviewed line"
+
+# Zero occurrences fails for the same reason one-per-entry does. A stale entry
+# is not a tidiness problem: it sits there licensing a line that no longer
+# exists, so the day that line comes back - restored by a revert, a merge, or a
+# copy from history - it is approved without anybody reading it.
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+grep -v '^    bin/fm-teardown\.sh)$' "$FIXTURE/bin/fm-test-run.sh" > "$FIXTURE/trimmed" \
+  || fail "could not trim the allowlisted line out of the fixture"
+mv "$FIXTURE/trimmed" "$FIXTURE/bin/fm-test-run.sh"
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=1" \
+  "an entry whose line is gone must fail"$'\n'"--- output ---"$'\n'"$out"
+assert_contains "$out" "matched no call site for" \
+  "the failure must say the entry matched nothing"$'\n'"--- output ---"$'\n'"$out"
+pass "occurrence: a stale entry fails rather than waiting to re-license its line"
 
 # --- fail-closed on a basis it cannot read ----------------------------------
 
