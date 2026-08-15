@@ -71,14 +71,14 @@
 #          FMX_PAIRING_TOKEN. When opted in, bootstrap requires curl+jq, writes
 #          the relay poll shim and 30s cadence config, and prints an FMX line.
 #          Fleet sync fetches, fast-forwards safe default-branch states, reports
-#          recovered and STUCK clone drift, and prunes gone local branches; it is
-#          bounded by FM_FLEET_SYNC_BOOTSTRAP_TIMEOUT when it is a non-empty
+#          recovered and STUCK clone drift; it never deletes a branch, a
+#          worktree, or a working-tree file. It is bounded by
+#          FM_FLEET_SYNC_BOOTSTRAP_TIMEOUT when it is a non-empty
 #          numeric override, while non-numeric values fall back to 20s.
 #          When the override is unset or blank, the timeout is
 #          max(20, 5 + 3 * origin-backed project clone count). A timed-out
 #          refresh relays any completed fm-fleet-sync.sh output before the
 #          aggregate timeout skip line with timeout and elapsed seconds.
-#          Set FM_FLEET_PRUNE=0 to skip branch pruning during that refresh.
 #          Set FM_BOOTSTRAP_DETECT_ONLY=1 to skip the six MUTATING sweeps
 #          (PR-check migration, secondmate_sync, secondmate_liveness_sweep,
 #          secondmate_handoff_resume, x_mode_setup, fleet_sync) while still
@@ -273,11 +273,12 @@ secondmate_sync() {
   # checkout's current default-branch commit. That path is purely LOCAL - no
   # fetch, no origin dependency: a linked-worktree home already holds the primary's
   # commit (fm-ff-lib.sh), while a standalone clone without it is skipped until
-  # /updatefirstmate refreshes it from origin. Startup sends reread nudges only
-  # for RUNNING secondmates whose instruction surface (AGENTS.md, bin/, or
-  # .agents/skills/) actually changed, so a secondmate already on the primary's
-  # version is never disturbed (AGENTS.md bootstrap + supervision). Unlike
-  # /updatefirstmate, startup owns the live-convergence send itself because it is
+  # an operator-run bin/fm-update.sh refreshes it from origin. Startup sends
+  # reread nudges only for RUNNING secondmates whose instruction surface
+  # (AGENTS.md, bin/, or .agents/skills/) actually changed, so a secondmate
+  # already on the primary's version is never disturbed (AGENTS.md bootstrap +
+  # supervision). Unlike that operator-run update, startup owns the
+  # live-convergence send itself because it is
   # a deterministic locked sweep and can report success as BOOTSTRAP_INFO while
   # preserving failed sends as NUDGE_SECONDMATES retry markers.
   [ -d "$STATE" ] || return 0
