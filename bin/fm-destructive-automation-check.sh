@@ -314,11 +314,27 @@ ENTRIES
 # again, and re-reviewed on every unrelated edit to the file. The rule keeps its
 # lists and says here what they do not reach.
 #
-# The option handle has a residue of its own, in the safe direction. `-o` is
-# not always an output: `set -o pipefail`, `ps -o`, `ssh -o` and `find ... -o`
-# all spell something else, and all of them would need a reviewed entry saying
-# so if they appeared in the sweep. None do today. That is the cost of reading a
-# convention instead of a parse, and it is paid in one direction only.
+# Reading the convention means reading all of it, including the part that is
+# not spelled with a separator. A single-letter option ordinarily accepts its
+# argument attached, so `gcc input.c -o"$PROJ/tool"` writes the file and reads
+# as `-o$PROJ/tool` once the probe has stripped the quotes - and a rule that
+# wanted whitespace or `=` after the `-o` matched neither that nor the bare
+# `-o$PROJ/tool2`. `gcc` is in no list here and never will be, which is the
+# whole reason the option is the handle, so requiring a separator gave the
+# escape back to exactly the commands this alternative exists to reach. The
+# short forms therefore take no separator; the long forms keep theirs, because
+# a long option cannot carry an attached argument in any convention that has
+# one.
+#
+# The option handle has a residue of its own, in the safe direction, and
+# dropping the separator widens it. `-o` is not always an output: `set -o
+# pipefail`, `ps -o`, `ssh -o` and `find ... -o` all spell something else, and
+# without the separator so do `ssh -oBatchMode=yes`, `gcc -O2` and any other
+# single-dash option that merely starts with `o`. Every one of them would need
+# a reviewed entry saying it names no file if it appeared in the sweep. None do
+# today: the widening was measured across the tracked tree and costs zero
+# reviewed lines. That is the price of reading a convention instead of a parse,
+# and it is paid in one direction only.
 #
 # The redirect that overwrites a file has no verb of its own and is handled by
 # probe_filter's truncating-redirect test rather than by this list.
@@ -398,7 +414,15 @@ SWEEP_VERSION='([0-9]+([.][0-9]+)*)?'
 # vendor tool nobody has heard of are caught by the same alternative that
 # catches the reported `curl -o` and `wget -O`. See the header for why the
 # convention is read rather than the namespace enumerated.
-SWEEP_OUTPUT_OPT='[[:space:]]-[oO]([[:space:]]|=)|[[:space:]]--(output|output-file|out|outfile)([[:space:]]|=)|[[:space:]]of='
+#
+# The short forms take no separator at all, because a single-letter option
+# ordinarily accepts its argument attached: `gcc input.c -o"$PROJ/tool"` writes
+# the file, and after the probe strips quotes it reads `-o$PROJ/tool`, which a
+# separator requirement refused to match. The long forms keep theirs, because a
+# long option cannot take an attached argument - `--output` needs a space or an
+# `=` in every convention that has one - so requiring it there costs nothing and
+# keeps `--outdated` out.
+SWEEP_OUTPUT_OPT='[[:space:]]-[oO]|[[:space:]]--(output|output-file|out|outfile)([[:space:]]|=)|[[:space:]]of='
 SWEEP_FORBIDDEN='(^|[^[:alnum:]_.-])('"$SWEEP_VERBS_REMOVE"'|'"$SWEEP_VERBS_INPLACE"'|'"$SWEEP_VERBS_REWRITE"'|'"$SWEEP_VERBS_INTERP"'|'"$SWEEP_VERBS_FETCH"')'"$SWEEP_VERSION"'([[:space:]]|$)|'"$SWEEP_OUTPUT_OPT"'|git.*[[:space:]](branch|worktree|clean|gc|prune|reflog|update-ref|reset|checkout|restore|switch|stash|push|merge|rebase|cherry-pick|revert|am|apply|read-tree|sparse-checkout|submodule|filter-branch|replace|notes|tag|update-index|repack|symbolic-ref|remote|bisect|mv)([[:space:]]|$)|-delete([[:space:]]|$)|-exec[[:space:]]+[^[:space:]]*rm'
 
 # The sweep's reviewed lines, as "<normalized line><TAB><reason>", normalized

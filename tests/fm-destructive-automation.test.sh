@@ -636,6 +636,49 @@ assert_contains "$out" "set -o pipefail" \
   "the shell-option spelling must be the one reported"$'\n'"--- output ---"$'\n'"$out"
 pass "rule 3: the output-option handle over-reads in the fail-closed direction"
 
+# The attached form of the same option, which is how a single-letter option
+# ordinarily takes its argument. All three went unreported by the check
+# extracted from `8311115`, where the alternative wanted whitespace or `=` after
+# the `-o` and the character after it is a quote or a `$`. `gcc` carries the
+# case: it is in no verb list here and never will be, so requiring a separator
+# handed the escape straight back to the commands the option handle exists to
+# reach. The third line is the widened over-read, caught for the reason the
+# header gives - a single-dash option that merely starts with `o` names no file
+# and would need a reviewed entry saying so.
+# shellcheck disable=SC2016 # These are source lines written into a fixture, not commands this test runs.
+SWEEP_ATTACHED_OUTPUT_OPTIONS=(
+  'gcc input.c -o"$PROJ/tool"'
+  'gcc input.c -o$PROJ/tool2'
+  'ssh -oBatchMode=yes host true'
+)
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+printf '\n' >> "$FIXTURE/bin/fm-fleet-sync.sh"
+printf '%s\n' "${SWEEP_ATTACHED_OUTPUT_OPTIONS[@]}" >> "$FIXTURE/bin/fm-fleet-sync.sh"
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=1" \
+  "an output option with its argument attached must fail"$'\n'"--- output ---"$'\n'"$out"
+for spelling in "${SWEEP_ATTACHED_OUTPUT_OPTIONS[@]}"; do
+  assert_contains "$out" "$spelling" \
+    "\`$spelling\` in the startup sweep must be caught"$'\n'"--- output ---"$'\n'"$out"
+done
+pass "rule 3: a single-letter output option may carry its argument attached"
+
+# The other side of that widening: a long option cannot take an attached
+# argument, so the long forms keep the separator the short ones dropped, and
+# `--outdated` is not `--out`. This is the only case standing between the long
+# forms and the same treatment, so dropping their separator has to break it.
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+{
+  printf '\n'
+  printf '%s\n' 'somevendortool --outdated --check >/dev/null'
+} >> "$FIXTURE/bin/fm-fleet-sync.sh"
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=0" \
+  "a long option that merely starts with --out names no output file"$'\n'"--- output ---"$'\n'"$out"
+pass "rule 3: the long output options keep the separator the short ones drop"
+
 # The verb list holds `prune` and `push`, so the two forms the sweep is meant to
 # keep have to be pinned from the other side: `--prune` on git fetch drops
 # remote-tracking refs, which hold no work, and a read is a read. Both are
