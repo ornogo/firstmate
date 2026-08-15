@@ -399,7 +399,7 @@ tests/fm-daemon.test.sh 15140
 tests/fm-destructive-automation.test.sh 107383
 tests/fm-documentation-audiences.test.sh 572
 tests/fm-fleet-snapshot-view.test.sh 5902
-tests/fm-fleet-sync.test.sh 16417
+tests/fm-fleet-sync.test.sh 24012
 tests/fm-gate-refuse.test.sh 2839
 tests/fm-gitignore-config.test.sh 28
 tests/fm-gotmp.test.sh 308

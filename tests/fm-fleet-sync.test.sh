@@ -12,6 +12,12 @@
 # The pre-existing fast-forward / already-current / local-only / no-origin paths
 # must be unchanged, and bootstrap must relay the new outcomes as FLEET_SYNC lines.
 #
+# It pins the sweep's central safety property behaviorally: a local branch whose
+# upstream is gone keeps its unpushed commit through a real sync. "Gone" includes
+# a PR closed without merging, so the gone-branch prune this fork removed destroyed
+# work on exactly that path; the destructive-automation check proves that function's
+# name is absent from the tree, which is not the same claim.
+#
 # It also pins the orphaned .git/packed-refs.lock recovery in the fetch step
 # (fetch_with_packed_refs_lock_guard, backed by bin/fm-lock-lib.sh's shared
 # staleness proof): a provably-stale lock is retried then removed and the clone
@@ -119,6 +125,49 @@ build_packed_prunable() {
   git -C "$work" push -q origin main
   git -C "$work" push -q origin --delete feature
   git -C "$clone" pack-refs --all
+  printf '%s\n' "$clone"
+}
+
+# build_gone_branch_clone <home> <name>: a clone sitting cleanly on main, one
+# commit behind origin/main, holding a local `feature` branch that tracks a
+# since-deleted origin/feature and carries a commit that exists nowhere else. It
+# has no worktree and is not checked out, which is exactly the state the removed
+# gone-branch prune force-deleted: "gone" upstream plus no worktree was read as
+# proof the work had landed, but a PR closed WITHOUT merging is also gone, and then
+# the unique commit below is the work that gets destroyed. Echoes the clone path;
+# the caller reads the unique commit off refs/heads/feature, because this runs in a
+# command substitution and cannot hand back a variable.
+build_gone_branch_clone() {
+  local home=$1 name=$2 work remote clone remote_abs
+  work="$home/work-$name"
+  remote="$home/remotes/$name.git"
+  clone="$home/projects/$name"
+  mkdir -p "$home/remotes"
+
+  git init -q "$work"
+  git -C "$work" symbolic-ref HEAD refs/heads/main
+  commit_file "$work" file.txt v0 C0
+  git clone --quiet --bare "$work" "$remote"
+  remote_abs=$(cd "$remote" && pwd)
+  git -C "$work" remote add origin "file://$remote_abs"
+  git -C "$work" push -q -u origin main
+  git -C "$work" push -q origin main:refs/heads/feature
+
+  git clone --quiet "file://$remote_abs" "$clone"
+  git -C "$clone" branch -q feature origin/feature
+  # The unique commit, made on feature and then left behind on main. Checkout
+  # rather than a worktree on purpose: a worktree is the one thing the removed
+  # prune explicitly refused to delete over, so it would make the case vacuous.
+  git -C "$clone" checkout -q feature
+  commit_file "$clone" unique.txt "unpushed work" "work that only exists here"
+  git -C "$clone" checkout -q main
+
+  # The PR is closed without merging: the remote branch goes away while the local
+  # commit above never reached it. origin/main also advances, so the sweep has
+  # real work to do and cannot pass by doing nothing.
+  git -C "$work" push -q origin --delete feature
+  commit_file "$work" file.txt v1 C1
+  git -C "$work" push -q origin main
   printf '%s\n' "$clone"
 }
 
@@ -470,6 +519,43 @@ test_bootstrap_relays_recovered_and_stuck() {
   pass "bootstrap relays recovered: and STUCK: fleet-sync outcomes"
 }
 
+# --- gone-branch preservation ------------------------------------------------
+
+# The behavioral receipt for this branch's headline change. Everything else about
+# the gone-branch prune's removal is pinned by a source-contract check, and a source
+# check survives no refactor of the thing it reads: it proves a name is absent, not
+# that the work is safe. This runs the real sweep over a real clone
+# and asserts the user-visible property directly - a branch whose PR closed
+# without merging still has its unpushed commit afterwards - so it holds however
+# the scanner is later rewritten, and it fails at a6f4d67 where the prune lived.
+test_gone_branch_and_its_unique_commit_survive_the_sweep() {
+  local home clone out sha
+  home=$(new_home)
+  clone=$(build_gone_branch_clone "$home" prunable)
+  sha=$(git -C "$clone" rev-parse feature)
+
+  out=$(run_sync "$home" "$clone")
+
+  # The sweep ran and did its job, so a surviving branch is not just a sweep that
+  # skipped this clone.
+  assert_contains "$out" "prunable: synced" "the sweep must actually sync the clone"
+  [ "$(head_sha "$clone")" = "$(git -C "$clone" rev-parse origin/main)" ] \
+    || fail "clone was not fast-forwarded, so this case never reached the prune point"
+  # And it pruned the remote-tracking ref, which is what made the local branch
+  # "gone" - the exact condition the removed prune keyed its deletion on.
+  git -C "$clone" rev-parse --verify --quiet origin/feature >/dev/null \
+    && fail "expected origin/feature pruned by the sweep's fetch --prune"
+
+  git -C "$clone" rev-parse --verify --quiet refs/heads/feature >/dev/null \
+    || fail "local branch feature was deleted by the sweep"
+  [ "$(git -C "$clone" rev-parse feature)" = "$sha" ] \
+    || fail "feature no longer points at its unique commit"
+  git -C "$clone" cat-file -e "$sha^{commit}" 2>/dev/null \
+    || fail "the unique commit is gone from the object store"
+  assert_not_contains "$out" "pruned" "the sweep must not report pruning a branch"
+  pass "a gone-upstream branch keeps its unpushed commit through a real sweep"
+}
+
 # --- packed-refs.lock guard tests -------------------------------------------
 
 test_orphaned_stale_packed_refs_lock_recovers() {
@@ -620,6 +706,7 @@ test_single_project_by_projects_relative_name_ignores_cwd_shadow
 test_single_project_unresolvable_name_still_skips
 test_whole_fleet_form
 test_bootstrap_relays_recovered_and_stuck
+test_gone_branch_and_its_unique_commit_survive_the_sweep
 test_orphaned_stale_packed_refs_lock_recovers
 test_live_packed_refs_lock_is_never_removed
 test_live_git_cwd_in_clone_dir_blocks_removal
