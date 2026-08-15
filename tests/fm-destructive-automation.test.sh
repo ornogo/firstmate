@@ -444,6 +444,12 @@ pass "rule 3: a truncating redirect in the startup sweep fails"
 # and turns this case rc=1. `&>>` is the reason to spell the pair out: `&>` is a
 # truncation despite the ampersand, and doubling the `>` does make this one an
 # append.
+#
+# `>&10` is a fourth that nothing upstream pins. The strip has to read the whole
+# digit run, because stopping after one digit leaves the `0` standing and turns a
+# descriptor duplication into a finding. It is mutation-proved on exactly that
+# single-digit mutant, which leaves the shipped tree green because the sweep
+# duplicates only single-digit descriptors.
 # shellcheck disable=SC2016 # These are source lines written into a fixture, not commands this test runs.
 SWEEP_SAFE_REDIRECTS=(
   'printf %s x >> "$PROJ/fleet-sync.log"'
@@ -451,6 +457,7 @@ SWEEP_SAFE_REDIRECTS=(
   'git -C "$PROJ" status --porcelain >/dev/null 2>&1'
   'echo "sync complete" >&2'
   'git -C "$PROJ" rev-parse HEAD 2>&-'
+  'git -C "$PROJ" log --oneline >&10'
 )
 FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
 printf '\n' >> "$FIXTURE/bin/fm-fleet-sync.sh"
@@ -460,6 +467,35 @@ out=$(run_check "$FIXTURE")
 assert_contains "$out" "rc=0" \
   "appends, descriptor redirects and /dev/null writes must stay legal in the startup sweep"$'\n'"--- output ---"$'\n'"$out"
 pass "rule 3: a redirect that destroys nothing stays legal in the startup sweep"
+
+# The other side of a subtractive test: an exemption that matches a *prefix* of
+# the target deletes the `>` that a longer name still truncates. Both exemptions
+# had that shape and both were reachable. `>&2foo` is not a descriptor
+# duplication - bash duplicates only when the word is all digits or `-`, and
+# otherwise sends both streams to the file named by the word, so `echo hi >&2foo`
+# truncates ./2foo - and `/dev/null.backup` is an ordinary file that happens to
+# start with the null device's name. `/dev/nullify` is the same hole without the
+# separator, so the boundary cannot simply be punctuation. All three are rc=0 on
+# the check extracted from `e6e7122` and rc=1 now, which is this fixture's
+# receipt; no mutant is needed, because the shipped check is the mutant.
+# shellcheck disable=SC2016 # These are source lines written into a fixture, not commands this test runs.
+SWEEP_PREFIX_BYPASSES=(
+  'printf %s x >/dev/null.backup'
+  'printf %s x > /dev/nullify'
+  'echo hi >&2foo'
+)
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+printf '\n' >> "$FIXTURE/bin/fm-fleet-sync.sh"
+printf '%s\n' "${SWEEP_PREFIX_BYPASSES[@]}" >> "$FIXTURE/bin/fm-fleet-sync.sh"
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=1" \
+  "a redirect target that merely starts with an exempt name must fail"$'\n'"--- output ---"$'\n'"$out"
+for spelling in "${SWEEP_PREFIX_BYPASSES[@]}"; do
+  assert_contains "$out" "$spelling" \
+    "\`$spelling\` in the startup sweep must be caught"$'\n'"--- output ---"$'\n'"$out"
+done
+pass "rule 3: a target that merely starts with an exempt name still fails"
 
 # The verb list holds `prune` and `push`, so the two forms the sweep is meant to
 # keep have to be pinned from the other side: `--prune` on git fetch drops

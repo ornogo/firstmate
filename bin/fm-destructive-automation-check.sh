@@ -389,6 +389,21 @@ fail() {
 # any ">" still standing truncates something. "&>" is deliberately not stripped
 # with the appends - it redirects both streams and truncates while doing it - and
 # ">|" needs no case of its own, since overriding noclobber leaves its ">" behind.
+#
+# Each strip ends at a token boundary, because a subtractive test is only as safe
+# as its exemptions are exact: an exemption that matches a *prefix* of the target
+# deletes the ">" that a longer name still truncates. Both are reachable. ">&2"
+# is a descriptor duplication but ">&2foo" is not - bash duplicates only when the
+# word is all digits or "-", and otherwise sends both streams to that file, so
+# `echo hi >&2foo` truncates ./2foo (verified against bash 5) while a prefix
+# strip leaves "foo" and nothing to flag. "/dev/null" has the same shape:
+# "> /dev/null.backup" names an ordinary file. The boundary excludes "/" as well
+# as name characters, so ">&1/x" - a file named 1/x, not fd 1 - stays flagged,
+# and it excludes ">" so a second redirect can never be consumed as a boundary.
+# "> /dev/null/x" is flagged too, which is conservative rather than correct
+# (/dev/null is not a directory, so that write cannot succeed), and conservative
+# is the affordable direction here: it costs nothing, because the sweep has no
+# such line.
 probe_filter() {
   # shellcheck disable=SC2016 # awk owns every $ expression in this literal program.
   FM_PROBE_RE=$1 FM_PROBE_REDIR=${2-} awk '
@@ -396,6 +411,9 @@ probe_filter() {
       SQ = sprintf("%c", 39)
       re = ENVIRON["FM_PROBE_RE"]
       redir = ENVIRON["FM_PROBE_REDIR"]
+      # A dynamic regex, so the "/" needs no backslash that awks disagree over
+      # inside a bracket expression.
+      TOKEN_END = "[^[:alnum:]_./>-]"
     }
     {
       probe = $0
@@ -405,10 +423,12 @@ probe_filter() {
       gsub(/\\/, "", probe)
       if (probe ~ re) { print; next }
       if (redir != "") {
-        rd = probe
+        # The trailing space is TOKEN_END for a redirect that ends the line, so
+        # one is exempted the same as one followed by anything else.
+        rd = probe " "
         gsub(/&?>>/, "", rd)
-        gsub(/>&[0-9-]/, "", rd)
-        gsub(/&?[0-9]?>[[:space:]]*\/dev\/null/, "", rd)
+        gsub(">&([0-9]+|-)" TOKEN_END, " ", rd)
+        gsub("&?[0-9]?>[[:space:]]*/dev/null" TOKEN_END, " ", rd)
         if (rd ~ />/) { print }
       }
     }
