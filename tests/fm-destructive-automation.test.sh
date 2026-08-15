@@ -1597,3 +1597,73 @@ assert_contains "$out" "rc=1" \
 assert_contains "$out" "fm-lock-lib.sh" \
   "the failure must name the file the line is in"$'\n'"--- output ---"$'\n'"$out"
 pass "rule 3: an output option is flagged at the start of a line, not only after a space"
+
+# --- the scope follows what `.` is given, not what the line mentions ---------
+#
+# The resolver read the whole logical line for tracked basenames. A line can
+# mention one script and source another, so an incidental name resolved the
+# scope to the wrong file and reported the line as followed. Here bin/fm-aaa-lib.sh
+# is what the computed path reaches and bin/fm-zzz-lib.sh is the name that
+# happens to sit on the line; measured with the sourcing line reviewed, the
+# previous check passed this tree outright.
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+cat > "$FIXTURE/bin/fm-aaa-lib.sh" <<'EOF'
+#!/usr/bin/env bash
+rm -rf "$FM_HOME/projects"
+EOF
+cat > "$FIXTURE/bin/fm-zzz-lib.sh" <<'EOF'
+#!/usr/bin/env bash
+return 0
+EOF
+cat >> "$FIXTURE/bin/fm-lock-lib.sh" <<'EOF'
+
+fallback=fm-zzz-lib.sh; . "$SCRIPT_DIR/$selected"
+EOF
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=1" \
+  "a computed source must not be resolved by another name on the line"$'\n'"--- output ---"$'\n'"$out"
+assert_contains "$out" "the sweep's scope cannot be determined" \
+  "an unresolvable operand must lose the scope, not silently bind to a bystander"$'\n'"--- output ---"$'\n'"$out"
+pass "rule 3: the scope resolves what . is given, not any name on the line"
+
+# The operand split must keep the scope as wide as it was. A shell command and
+# the `.` that follows it share one whitespace-delimited token, so the source
+# verb is recognised only after everything through the token's last separator is
+# dropped. Asserted by file-and-line: without that, this fixture still fails,
+# but as an unresolvable scope, and the deletion itself goes unnamed.
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+cat > "$FIXTURE/bin/fm-aaa-lib.sh" <<'EOF'
+#!/usr/bin/env bash
+rm -rf "$FM_HOME/projects"
+EOF
+cat >> "$FIXTURE/bin/fm-lock-lib.sh" <<'EOF'
+
+:;. "$SCRIPT_DIR/fm-aaa-lib.sh"
+EOF
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=1" \
+  "a source verb adjacent to a separator must still be read"$'\n'"--- output ---"$'\n'"$out"
+assert_contains "$out" "bin/fm-aaa-lib.sh:2" \
+  "the file sourced after a separator must be scanned, not lost to the scope"$'\n'"--- output ---"$'\n'"$out"
+pass "rule 3: a source verb sharing a token with the command before it still resolves"
+
+# The boundary in front of `.`/`source` is deliberately wide, so a line that
+# only mentions the word fails as an unresolvable scope. That false positive is
+# the price of the fail-closed direction, and it is pinned here: narrowing the
+# boundary to shell command position - the change a reviewer asked for - passes
+# this fixture green with the scope unchanged, which is the same silence a
+# sourcing form the narrower pattern misses would produce.
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+cat >> "$FIXTURE/bin/fm-lock-lib.sh" <<'EOF'
+
+printf '%s\n' "check source code"
+EOF
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=1" \
+  "a line this check reads as sourcing must resolve or fail"$'\n'"--- output ---"$'\n'"$out"
+assert_contains "$out" "the sweep's scope cannot be determined" \
+  "the wide boundary must fail loudly rather than skip the line"$'\n'"--- output ---"$'\n'"$out"
+pass "rule 3: a line that only mentions source fails closed, it is not skipped"

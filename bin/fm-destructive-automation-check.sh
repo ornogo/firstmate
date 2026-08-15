@@ -775,8 +775,20 @@ SCANNED=$(git ls-files -- 'bin/*' | wc -l | tr -d ' ')
 # A fixed point over a space-separated list, which is safe because a tracked
 # bin/ path cannot contain a space: git ls-files would quote it, and the loop
 # below only ever appends names it read back out of that listing.
+#
+# The boundary in front of `.`/`source` stays wide - any character that cannot
+# be part of a name - because narrowing it to shell command position is the
+# fail-open direction: a sourcing form the narrower pattern fails to recognise
+# is a file that never enters the scope and is never scanned. Wide costs the
+# opposite, and the cost is real: a line that merely contains ` source ` or
+# ` . ` in prose is read as a sourcing line, resolves to no tracked script, and
+# hard-fails as unresolvable scope. That is the same trade rule 3 already makes
+# for `-o`, and it is stated here rather than argued away. No such line is in
+# the scope today; one added later fails loudly instead of quietly dropping a
+# file, which is the direction this check picks everywhere else.
 SWEEP_SOURCE_RE='(^|[^[:alnum:]_./-])(\.|source)[[:space:]]'
 SQ=$(printf "\047")
+SWEEP_TRACKED=$(git ls-files -- 'bin/*')
 SWEEP_SCOPE=$SWEEP
 sweep_pending=$SWEEP
 while [ -n "$sweep_pending" ]; do
@@ -790,36 +802,67 @@ while [ -n "$sweep_pending" ]; do
       # Same probe the rules read: quotes and backslashes stripped, so
       # `. "$SCRIPT_DIR/fm-lock-lib.sh"` yields the basename plainly.
       sweep_probe=$(printf '%s\n' "$sweep_code" | tr -d "\"$SQ\\\\")
-      # Every match on the line, not one: `. "$D/a.sh"; . "$D/b.sh"` is one
+      # What `.`/`source` is actually given, not any name elsewhere on the
+      # line. `fallback=fm-lock-lib.sh; . "$D/$selected"` is one logical line
+      # whose real source is computed: reading the whole line resolves the
+      # scope to the incidental name, reports the line as followed, and once
+      # that line is reviewed in SWEEP_ALLOWLIST - which it must be, since it
+      # names a tracked script - the file the sweep actually sources is never
+      # read at all.
+      #
+      # Both directions of error in this split land fail-closed. A source verb
+      # this misses yields no operand, so the line resolves to nothing and
+      # fails below as unresolvable scope; a token it wrongly takes for a
+      # source verb only adds one more operand to resolve. Everything through
+      # the token's last separator is stripped, not merely a leading run of
+      # them, because `:;. "$D/a.sh"` puts the whole preceding command in the
+      # same whitespace-delimited token as the `.`; and the line's last token
+      # is never a verb, since a verb with no operand sources nothing.
+      #
+      # Every operand on the line, not one: `. "$D/a.sh"; . "$D/b.sh"` is one
       # logical line sourcing two scripts, and keeping only the last one leaves
       # the other outside the scope while its sourcing line sits reviewed in
       # SWEEP_ALLOWLIST - a deletion in the dropped script then passes rule 3
-      # unseen. Over-inclusion is the safe direction and the one taken here:
-      # `herdr.sh` is a substring of `fm-install-herdr.sh`, so a line naming the
-      # second enqueues both, which widens the basis and costs reviewed entries
-      # rather than hiding a line.
+      # unseen. Within an operand, matching stays a basename substring, so
+      # over-inclusion is still the direction taken: `herdr.sh` is a substring
+      # of `fm-install-herdr.sh`, so an operand naming the second enqueues
+      # both, which widens the basis and costs reviewed entries rather than
+      # hiding a line.
       #
       # The tracked path is what gets enqueued, not "bin/" plus the basename:
       # bin/backends/ holds tracked scripts too, and a reconstructed
       # `bin/herdr.sh` matches no EXEC_LINES prefix, so the scope would carry a
       # name whose every line is silently unscanned.
+      sweep_operands=$(printf '%s\n' "$sweep_probe" | awk '
+        {
+          n = split($0, tok, /[[:space:]]+/)
+          for (i = 1; i < n; i++) {
+            verb = tok[i]
+            sub(/^.*[;&|(){}]/, "", verb)
+            if (verb == "." || verb == "source") print tok[i + 1]
+          }
+        }
+      ')
       sweep_matched=""
-      for sweep_path in $(git ls-files -- 'bin/*'); do
-        case $sweep_probe in
-          *"${sweep_path##*/}"*) ;;
-          *) continue ;;
-        esac
-        sweep_matched=yes
-        case " $SWEEP_SCOPE $sweep_next " in
-          *" $sweep_path "*) ;;
-          *) sweep_next="$sweep_next $sweep_path" ;;
-        esac
+      # shellcheck disable=SC2086 # Both lists are whitespace-separated by construction; splitting them is the point.
+      for sweep_operand in $sweep_operands; do
+        for sweep_path in $SWEEP_TRACKED; do
+          case $sweep_operand in
+            *"${sweep_path##*/}"*) ;;
+            *) continue ;;
+          esac
+          sweep_matched=yes
+          case " $SWEEP_SCOPE $sweep_next " in
+            *" $sweep_path "*) ;;
+            *) sweep_next="$sweep_next $sweep_path" ;;
+          esac
+        done
       done
       if [ -z "$sweep_matched" ]; then
-        # A sourcing line naming no tracked script sources something this scan
-        # cannot read, so the scope is unknown and the rule cannot make its
-        # claim. Fail rather than skip: an unreadable branch of the sweep's own
-        # shell is exactly what this rule exists to refuse.
+        # A sourcing line whose operands name no tracked script sources
+        # something this scan cannot read, so the scope is unknown and the rule
+        # cannot make its claim. Fail rather than skip: an unreadable branch of
+        # the sweep's own shell is exactly what this rule exists to refuse.
         fail "${sweep_from}:${sweep_lineno} sources a script this check cannot resolve to a tracked bin/ file, so the sweep's scope cannot be determined:"
         printf '  %s\n' "$sweep_code" >&2
         continue
