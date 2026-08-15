@@ -531,6 +531,55 @@ for spelling in "${SWEEP_INPLACE_MUTATORS[@]}"; do
 done
 pass "rule 3: overwriting a file in place is as destructive as removing it"
 
+# The interpreter class is matched on the executable's name, and an executable's
+# name ordinarily carries a version. Every spelling here was rc=0 on the check
+# extracted from `b4aea22` - the trailing boundary wanted whitespace and got the
+# `.` of `python3.12` or the `5` of `perl5.36` - and all four are rc=1 now, which
+# is this fixture's receipt. Two of them, `python3.12` and `python2`, are the
+# reported spelling's family; the other two are there because the hole was never
+# python's, it belonged to every name in the group.
+# shellcheck disable=SC2016 # These are source lines written into a fixture, not commands this test runs.
+SWEEP_VERSIONED_INTERPRETERS=(
+  'python3.12 -c "import pathlib; pathlib.Path(p).unlink()"'
+  'perl5.36 -pi -e "s/x/y/" "$PROJ/notes.md"'
+  'ruby3.1 -i -e "gsub(/x/,0)" "$PROJ/notes.md"'
+  'python2 -c "open(p,0).write(0)"'
+)
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+printf '\n' >> "$FIXTURE/bin/fm-fleet-sync.sh"
+printf '%s\n' "${SWEEP_VERSIONED_INTERPRETERS[@]}" >> "$FIXTURE/bin/fm-fleet-sync.sh"
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=1" \
+  "a version-suffixed interpreter in the startup sweep must fail"$'\n'"--- output ---"$'\n'"$out"
+for spelling in "${SWEEP_VERSIONED_INTERPRETERS[@]}"; do
+  assert_contains "$out" "$spelling" \
+    "\`$spelling\` in the startup sweep must be caught"$'\n'"--- output ---"$'\n'"$out"
+done
+pass "rule 3: an interpreter keeps its name when it carries a version"
+
+# The other side of that tolerance, and the reason it is spelled `[0-9]+(...)`
+# rather than the shorter `[-.0-9]*`: a version has to start with a digit, or the
+# rule stops reading English as English. `dd` and `cp` are both in the removal
+# class, and a message that ends on one ends on a full stop - which the looser
+# spelling eats, leaving the space behind it to satisfy the boundary. These are
+# message lines rather than comments because rule 3 does not read comments, so a
+# commented version of this case would pass either way and prove nothing; both
+# were checked rc=1 under `[-.0-9]*` before being written down here.
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+{
+  printf '\n'
+  # shellcheck disable=SC2016 # A source line written into a fixture, not a command this test runs.
+  printf '%s\n' 'echo "$label: skipping, this project has no dd." >&2'
+  # shellcheck disable=SC2016 # Likewise.
+  printf '%s\n' 'echo "$label: nothing was copied by cp." >&2'
+} >> "$FIXTURE/bin/fm-fleet-sync.sh"
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=0" \
+  "a sentence ending on a verb and a full stop is not a versioned executable"$'\n'"--- output ---"$'\n'"$out"
+pass "rule 3: a version suffix must start with a digit, so prose stays prose"
+
 # The verb list holds `prune` and `push`, so the two forms the sweep is meant to
 # keep have to be pinned from the other side: `--prune` on git fetch drops
 # remote-tracking refs, which hold no work, and a read is a read. Both are

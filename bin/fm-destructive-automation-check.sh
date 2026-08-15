@@ -275,6 +275,23 @@ ENTRIES
 # was rejected: it leaves `sed -i`, the reported spelling, uncaught, which pays
 # the rule's whole purpose to save one line.
 #
+# The verb may carry a version suffix, because an executable name ordinarily
+# does. `python3.12 -c ...` is a normal invocation, and a plain trailing
+# boundary refused to match it: the character after `python3` is `.`, not
+# whitespace. That left an ordinary bypass in the interpreter class - the one
+# class added precisely because it has no destructive verb to fall back on. The
+# suffix is `[0-9]+([.][0-9]+)*`, so python3.12, perl5.36, ruby3.1 and node20 all
+# match, and the separate `python3` alternative is gone as redundant: `python`
+# plus the suffix already spells it.
+#
+# Requiring the suffix to start with a digit is the whole of the tolerance, and
+# is deliberate. Dropping the trailing boundary instead - matching the verb as a
+# prefix of whatever token it starts - would reach `python3.12rc1` as well, but
+# it also makes `ex` match `export`, `cp` match `cpio`, `sh` match `shopt` and
+# `ed` match `editor`. That is not a stricter gate, it is a rule that fires on
+# ordinary shell. The digit also keeps prose out: a sentence ending "... for dd."
+# does not match, because nothing follows that `.`.
+#
 # The redirect that overwrites a file has no verb of its own and is handled by
 # probe_filter's truncating-redirect test rather than by this list.
 #
@@ -336,9 +353,15 @@ SWEEP_VERBS_INPLACE='sed|perl|ruby|awk|ed|ex|patch|sponge|rsync'
 SWEEP_VERBS_REWRITE='sort|gzip|gunzip|bzip2|bunzip2|xz|unxz|zstd|tar|unzip|zip'
 # Interpreters, matched on the name because the code they run is opaque here.
 # xargs belongs in this class and not in removal: `xargs rm` is already caught by
-# rm, but `xargs -I{} sh -c ...` needs the same handle these do.
-SWEEP_VERBS_INTERP='python|python3|node|bash|sh|zsh|ksh|dash|osascript|xargs'
-SWEEP_FORBIDDEN='(^|[^[:alnum:]_.-])('"$SWEEP_VERBS_REMOVE"'|'"$SWEEP_VERBS_INPLACE"'|'"$SWEEP_VERBS_REWRITE"'|'"$SWEEP_VERBS_INTERP"')([[:space:]]|$)|git.*[[:space:]](branch|worktree|clean|gc|prune|reflog|update-ref|reset|checkout|restore|switch|stash|push|merge|rebase|cherry-pick|revert|am|apply|read-tree|sparse-checkout|submodule|filter-branch|replace|notes|tag|update-index|repack|symbolic-ref|remote|bisect|mv)([[:space:]]|$)|-delete([[:space:]]|$)|-exec[[:space:]]+[^[:space:]]*rm'
+# rm, but `xargs -I{} sh -c ...` needs the same handle these do. There is no
+# `python3` here: SWEEP_VERSION spells it from `python`.
+SWEEP_VERBS_INTERP='python|node|bash|sh|zsh|ksh|dash|osascript|xargs'
+# An executable name may carry a version: python3.12, perl5.36, node20. The
+# suffix must start with a digit, so `dd.` at the end of a sentence is still
+# prose. Only the non-git verbs need it; `git.*` matches its verbs mid-line
+# already.
+SWEEP_VERSION='([0-9]+([.][0-9]+)*)?'
+SWEEP_FORBIDDEN='(^|[^[:alnum:]_.-])('"$SWEEP_VERBS_REMOVE"'|'"$SWEEP_VERBS_INPLACE"'|'"$SWEEP_VERBS_REWRITE"'|'"$SWEEP_VERBS_INTERP"')'"$SWEEP_VERSION"'([[:space:]]|$)|git.*[[:space:]](branch|worktree|clean|gc|prune|reflog|update-ref|reset|checkout|restore|switch|stash|push|merge|rebase|cherry-pick|revert|am|apply|read-tree|sparse-checkout|submodule|filter-branch|replace|notes|tag|update-index|repack|symbolic-ref|remote|bisect|mv)([[:space:]]|$)|-delete([[:space:]]|$)|-exec[[:space:]]+[^[:space:]]*rm'
 
 # The sweep's reviewed lines, as "<normalized line><TAB><reason>", normalized
 # the same way as ALLOWLIST below. Every reason has to hold for the sweep's
