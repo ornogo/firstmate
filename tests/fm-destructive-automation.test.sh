@@ -580,6 +580,62 @@ assert_contains "$out" "rc=0" \
   "a sentence ending on a verb and a full stop is not a versioned executable"$'\n'"--- output ---"$'\n'"$out"
 pass "rule 3: a version suffix must start with a digit, so prose stays prose"
 
+# The fourth round in a row to find the verb list short, and the one that stops
+# it being answered with more verbs. Each of these names its output in an option
+# rather than in a destructive verb or a `>`, and five of the six went unreported
+# by the check extracted from `45f4f3e`. The sixth, `dd if=/dev/zero of=`, is the
+# control: the `dd` verb catches it on both checks, so the receipt here is the
+# five named spellings and not the exit code, which was already 1 either way.
+# The last three matter most: `ffmpeg`,
+# `openssl` and `somevendortool` are in no list in this file and never will be,
+# so they are the receipt that the alternative matching them reads a convention
+# rather than a namespace. Delete that alternative and those three go quiet
+# while the first two still fail, which is the failure this case exists to
+# distinguish.
+# shellcheck disable=SC2016 # These are source lines written into a fixture, not commands this test runs.
+SWEEP_OUTPUT_OPTION_WRITERS=(
+  'curl -o "$PROJ/notes.md" "$url"'
+  'wget -O "$PROJ/notes.md" "$url"'
+  'ffmpeg -y -i a.mp4 -o "$PROJ/out.mp4"'
+  'openssl enc --out "$PROJ/notes.md"'
+  'somevendortool --output-file "$PROJ/notes.md"'
+  'dd if=/dev/zero of="$PROJ/notes.md"'
+)
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+printf '\n' >> "$FIXTURE/bin/fm-fleet-sync.sh"
+printf '%s\n' "${SWEEP_OUTPUT_OPTION_WRITERS[@]}" >> "$FIXTURE/bin/fm-fleet-sync.sh"
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=1" \
+  "a command that names its output in an option must fail"$'\n'"--- output ---"$'\n'"$out"
+for spelling in "${SWEEP_OUTPUT_OPTION_WRITERS[@]}"; do
+  assert_contains "$out" "$spelling" \
+    "\`$spelling\` in the startup sweep must be caught"$'\n'"--- output ---"$'\n'"$out"
+done
+pass "rule 3: an output option is caught whatever command carries it"
+
+# The residue of reading a convention instead of a parse, pinned so it stays
+# stated rather than discovered. `-o` is not always an output: the two spellings
+# here are a shell option and a ps format, and neither names a file. Both are
+# caught anyway, and the rule says so in its header - in the sweep they would
+# each need a reviewed entry explaining that they write nothing. That is
+# fail-closed and deliberate, so quieting them later has to break this case
+# first. Both lines were rc=0 on the check extracted from `45f4f3e`.
+FIXTURE=$(bin_fixture) || fail "could not build the bin/ fixture"
+{
+  printf '\n'
+  printf '%s\n' 'set -o pipefail'
+  # shellcheck disable=SC2016 # A source line written into a fixture, not a command this test runs.
+  printf '%s\n' 'ps -p "$pid" -o command='
+} >> "$FIXTURE/bin/fm-fleet-sync.sh"
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+out=$(run_check "$FIXTURE")
+assert_contains "$out" "rc=1" \
+  "an -o that names no file is still caught, and the header says why"$'\n'"--- output ---"$'\n'"$out"
+assert_contains "$out" "set -o pipefail" \
+  "the shell-option spelling must be the one reported"$'\n'"--- output ---"$'\n'"$out"
+pass "rule 3: the output-option handle over-reads in the fail-closed direction"
+
 # The verb list holds `prune` and `push`, so the two forms the sweep is meant to
 # keep have to be pinned from the other side: `--prune` on git fetch drops
 # remote-tracking refs, which hold no work, and a read is a read. Both are

@@ -256,10 +256,13 @@ ENTRIES
 # classes defined just above SWEEP_FORBIDDEN. Naming the classes is the point:
 # what is enforceable is a list, and a list nobody can re-derive is a list that
 # grows one forgotten verb at a time. Asking instead which ordinary commands
-# write over a file that is already there partitions the answer into removal
+# write over a file that is already there groups the answer into removal
 # (replace or unlink a named file outright), in-place (read a file and write the
 # result back over it), whole-file (consume a file and leave a different one in
-# its place), and interpreter (run code this list cannot see).
+# its place), fetch (write a destination named by an option or by the source),
+# and interpreter (run code this list cannot see). These are groups, not a
+# partition: the last paragraphs below say what falls outside all five and how
+# each of those residues is handled.
 #
 # The interpreter class is where enumeration stops working. `python3 -c` and
 # `bash -c` carry no destructive verb at all, and no widening of the other three
@@ -291,6 +294,31 @@ ENTRIES
 # `ed` match `editor`. That is not a stricter gate, it is a rule that fires on
 # ordinary shell. The digit also keeps prose out: a sentence ending "... for dd."
 # does not match, because nothing follows that `.`.
+#
+# The list ran out one more time, and that is where it stops being a list. A
+# command can name its output in an option instead of carrying a destructive
+# verb: `curl -o "$PROJ/notes.md"` and `wget -O "$PROJ/notes.md"` replace a
+# working-tree file, and no enumeration of executables was ever going to hold
+# every program that does. So the last alternative matches the option rather
+# than the command in front of it - `-o`, `-O`, `--output`, `--out`,
+# `--output-file`, `of=` - which is a convention rather than a namespace, and
+# therefore covers `ffmpeg -o`, `openssl --out` and a vendor tool this file has
+# never heard of. It is the only handle here that gets stronger rather than
+# staler as the world adds programs.
+#
+# The alternative was to stop enumerating altogether and require a reviewed
+# entry for every line in the sweep, which is what rules 2 and 4 do for their
+# own scopes. It was measured rather than argued about, the same way the git
+# widening was: it produces 273 reviewed entries against the current 10. That is
+# not a stricter gate, it is a gate whose reviewed set nobody will ever read
+# again, and re-reviewed on every unrelated edit to the file. The rule keeps its
+# lists and says here what they do not reach.
+#
+# The option handle has a residue of its own, in the safe direction. `-o` is
+# not always an output: `set -o pipefail`, `ps -o`, `ssh -o` and `find ... -o`
+# all spell something else, and all of them would need a reviewed entry saying
+# so if they appeared in the sweep. None do today. That is the cost of reading a
+# convention instead of a parse, and it is paid in one direction only.
 #
 # The redirect that overwrites a file has no verb of its own and is handled by
 # probe_filter's truncating-redirect test rather than by this list.
@@ -356,12 +384,22 @@ SWEEP_VERBS_REWRITE='sort|gzip|gunzip|bzip2|bunzip2|xz|unxz|zstd|tar|unzip|zip'
 # rm, but `xargs -I{} sh -c ...` needs the same handle these do. There is no
 # `python3` here: SWEEP_VERSION spells it from `python`.
 SWEEP_VERBS_INTERP='python|node|bash|sh|zsh|ksh|dash|osascript|xargs'
+# Fetch and copy: each writes a destination file, and when no option names one
+# they take the name from the source, so `wget "$url"` lands on ./index.html.
+SWEEP_VERBS_FETCH='curl|wget|scp'
 # An executable name may carry a version: python3.12, perl5.36, node20. The
 # suffix must start with a digit, so `dd.` at the end of a sentence is still
 # prose. Only the non-git verbs need it; `git.*` matches its verbs mid-line
 # already.
 SWEEP_VERSION='([0-9]+([.][0-9]+)*)?'
-SWEEP_FORBIDDEN='(^|[^[:alnum:]_.-])('"$SWEEP_VERBS_REMOVE"'|'"$SWEEP_VERBS_INPLACE"'|'"$SWEEP_VERBS_REWRITE"'|'"$SWEEP_VERBS_INTERP"')'"$SWEEP_VERSION"'([[:space:]]|$)|git.*[[:space:]](branch|worktree|clean|gc|prune|reflog|update-ref|reset|checkout|restore|switch|stash|push|merge|rebase|cherry-pick|revert|am|apply|read-tree|sparse-checkout|submodule|filter-branch|replace|notes|tag|update-index|repack|symbolic-ref|remote|bisect|mv)([[:space:]]|$)|-delete([[:space:]]|$)|-exec[[:space:]]+[^[:space:]]*rm'
+# The option that names an output file, matched instead of the command in front
+# of it. This is the one handle here that is not a list of executables: it reads
+# a convention every one of them shares, so `ffmpeg -o`, `openssl --out` and a
+# vendor tool nobody has heard of are caught by the same alternative that
+# catches the reported `curl -o` and `wget -O`. See the header for why the
+# convention is read rather than the namespace enumerated.
+SWEEP_OUTPUT_OPT='[[:space:]]-[oO]([[:space:]]|=)|[[:space:]]--(output|output-file|out|outfile)([[:space:]]|=)|[[:space:]]of='
+SWEEP_FORBIDDEN='(^|[^[:alnum:]_.-])('"$SWEEP_VERBS_REMOVE"'|'"$SWEEP_VERBS_INPLACE"'|'"$SWEEP_VERBS_REWRITE"'|'"$SWEEP_VERBS_INTERP"'|'"$SWEEP_VERBS_FETCH"')'"$SWEEP_VERSION"'([[:space:]]|$)|'"$SWEEP_OUTPUT_OPT"'|git.*[[:space:]](branch|worktree|clean|gc|prune|reflog|update-ref|reset|checkout|restore|switch|stash|push|merge|rebase|cherry-pick|revert|am|apply|read-tree|sparse-checkout|submodule|filter-branch|replace|notes|tag|update-index|repack|symbolic-ref|remote|bisect|mv)([[:space:]]|$)|-delete([[:space:]]|$)|-exec[[:space:]]+[^[:space:]]*rm'
 
 # The sweep's reviewed lines, as "<normalized line><TAB><reason>", normalized
 # the same way as ALLOWLIST below. Every reason has to hold for the sweep's
