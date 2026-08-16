@@ -370,22 +370,30 @@ case "$EFFORT" in
   *) echo "error: --effort must be one of low, medium, high, xhigh, max" >&2; exit 1 ;;
 esac
 
-# Admission guard mode for this home, read exactly like config/backend and
-# config/crew-harness: the first non-empty line, whitespace stripped. Absent
-# file means off, which is what keeps every test fixture home and every home
-# bootstrapped before the guard existed spawning unchanged. Any other content is
-# a refusal, not a fallback to off: a typo in the file that governs whether the
-# guard runs must never resolve to "do not guard".
+# Admission guard mode for this home, read like config/backend and
+# config/crew-harness: the first non-blank line, surrounding whitespace removed.
+# Absent file means off, which is what keeps every test fixture home and every
+# home bootstrapped before the guard existed spawning unchanged. Any other
+# content is a refusal, not a fallback to off: a typo in the file that governs
+# whether the guard runs must never resolve to "do not guard".
 #
-# The default is cleared again inside the branch so that "absent" is the only
-# thing that means off. A file that exists but holds nothing readable is a
-# half-written config, not a decision to spawn unguarded, and it takes the same
-# refusal as a misspelled one.
+# That rule is why this reader is stricter than the other two. The default is
+# cleared again inside the branch so that "absent" is the only thing meaning
+# off, and anything present but unusable - a blank file, a directory, a dangling
+# symlink, a file this process cannot read - takes the same refusal as a
+# misspelled value rather than passing for a decision to spawn unguarded.
 ADMIT_MODE=off
-if [ -f "$CONFIG/admission" ]; then
+if [ -e "$CONFIG/admission" ] || [ -L "$CONFIG/admission" ]; then
   ADMIT_MODE=
+  if [ ! -f "$CONFIG/admission" ] || [ ! -r "$CONFIG/admission" ]; then
+    echo "error: $CONFIG/admission exists but is not a readable regular file; refusing rather than reading a broken config as 'off' and spawning unguarded" >&2
+    exit 1
+  fi
   while IFS= read -r admit_mode_line || [ -n "$admit_mode_line" ]; do
-    admit_mode_line=$(printf '%s' "$admit_mode_line" | tr -d '[:space:]')
+    # Surrounding whitespace only. Deleting internal whitespace as well would
+    # turn 'o ff' into the valid value 'off' - a malformed config resolving to
+    # "do not guard", which is the exact outcome this block exists to stop.
+    admit_mode_line=$(printf '%s' "$admit_mode_line" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
     [ -n "$admit_mode_line" ] || continue
     ADMIT_MODE=$admit_mode_line
     break

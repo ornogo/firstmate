@@ -198,6 +198,50 @@ test_a_blank_admission_file_is_refused_rather_than_treated_as_off() {
   pass "a blank config/admission is refused rather than treated as off"
 }
 
+# A -f test alone cannot tell "nobody armed this home" from "the thing that says
+# whether this home is armed is broken", and the second must not spawn.
+test_a_non_regular_admission_entry_is_refused_rather_than_treated_as_off() {
+  local case_name home out status
+  for case_name in directory dangling-symlink; do
+    home=$(make_admit_home "broken-mode-$case_name" '')
+    if [ "$case_name" = directory ]; then
+      mkdir -p "$home/config/admission"
+    else
+      ln -s "$home/config/no-such-admission-target" "$home/config/admission"
+    fi
+    out=$(run_ship_spawn "$home" "nope-admit-broken-$case_name-z12")
+    status=$?
+    expect_code 1 "$status" \
+      "a $case_name at config/admission should be refused, not treated as off; got: $out"
+    assert_contains "$out" "not a readable regular file" \
+      "a $case_name at config/admission was not named as a broken config"
+  done
+  pass "a non-regular config/admission entry is refused rather than treated as off"
+}
+
+# Stripping whitespace everywhere rather than at the ends turns a typo into a
+# valid value, and the valid value it lands on is the one that disarms the guard.
+test_internal_whitespace_does_not_normalize_a_typo_into_off() {
+  local home out status
+  home=$(make_admit_home split-token 'o ff')
+  out=$(run_ship_spawn "$home" nope-admit-split-z13)
+  status=$?
+  expect_code 1 "$status" \
+    "'o ff' should be refused rather than normalized to 'off'; got: $out"
+  assert_contains "$out" "must say 'on' or 'off'" \
+    "'o ff' was not refused as an unrecognized value"
+
+  # The other half of the same change: trimming the ends is still supported, so
+  # a padded value reads as the word it surrounds rather than joining the typos.
+  home=$(make_admit_home padded-token '   on   ')
+  out=$(run_ship_spawn "$home" nope-admit-padded-z14)
+  status=$?
+  expect_code 1 "$status" "a padded 'on' should still arm the guard; got: $out"
+  assert_contains "$out" "requires --branch <name> and --worktree <path>" \
+    "a padded 'on' did not read as an armed guard"
+  pass "internal whitespace does not normalize a typo into 'off'"
+}
+
 # An empty value would otherwise reach the guard as an empty branch or worktree.
 test_the_pair_requires_non_empty_values() {
   local home out status
@@ -421,6 +465,8 @@ test_relaunch_refuses_a_redeclared_effort
 test_the_pair_is_refused_in_a_batch
 test_unreadable_admission_mode_is_refused_rather_than_treated_as_off
 test_a_blank_admission_file_is_refused_rather_than_treated_as_off
+test_a_non_regular_admission_entry_is_refused_rather_than_treated_as_off
+test_internal_whitespace_does_not_normalize_a_typo_into_off
 test_the_pair_requires_non_empty_values
 test_an_orca_ship_spawn_cannot_be_admitted
 test_a_diverged_data_directory_is_refused

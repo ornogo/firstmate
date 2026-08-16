@@ -1116,18 +1116,25 @@ admission_write_if_absent() {
     rm -f -- "$tmp"
     return 1
   fi
-  # Re-checked immediately before the rename because mv replaces its destination
-  # without asking, and the ledger it would replace is the only record of which
-  # efforts are currently admitted. Losing that is worse than not provisioning,
-  # so a file that appeared since the check above is left exactly as it is.
-  if [ -e "$dest" ] || [ -L "$dest" ]; then
+  # Published with ln, not mv. mv replaces its destination without asking, and
+  # the file being published is the only record of which efforts are currently
+  # admitted; losing it frees every admission at once. A hard link fails outright
+  # when dest already exists, so "never replace" is a property of the publish
+  # itself rather than a window between a check and a rename that a concurrent
+  # bootstrap of the same home could land in. Both files sit in the same
+  # directory, so there is no cross-device case to fall back from.
+  if ln -- "$tmp" "$dest" 2>/dev/null; then
     rm -f -- "$tmp"
     return 0
   fi
-  if ! mv -- "$tmp" "$dest"; then
-    rm -f -- "$tmp"
-    return 1
+  rm -f -- "$tmp"
+  # The link failed either because something is already there - which is success,
+  # the ledger exists and was never this call's to touch - or because the
+  # directory could not take it, which the caller reports.
+  if [ -e "$dest" ] || [ -L "$dest" ]; then
+    return 0
   fi
+  return 1
 }
 
 # The admission guard's ledger (see bin/fm-admit.sh). Provisioned here so the
