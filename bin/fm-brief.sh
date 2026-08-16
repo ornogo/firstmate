@@ -201,9 +201,10 @@ STATUS_FILE=$(shell_quote "$STATE/$ID.status")
 # fail, and trip the recording hard stop on every delivery. So render the
 # scaffold's already-resolved home and state into the command, for the same
 # reason $STATUS_FILE is handed over as an absolute path rather than a relative
-# one. The script path itself stays interpolated in the style the surrounding
-# brief text already uses for firstmate helpers.
-PR_CHECK_CMD="FM_HOME=$(shell_quote "$FM_HOME") FM_STATE_OVERRIDE=$(shell_quote "$STATE") $FM_ROOT/bin/fm-pr-check.sh $ID {url}"
+# one. Every interpolated path is quoted, the helper path included: the worker
+# is told to run this line verbatim, and recording is a hard gate, so a checkout
+# or home under a path with a space would otherwise block PR delivery outright.
+PR_CHECK_CMD="FM_HOME=$(shell_quote "$FM_HOME") FM_STATE_OVERRIDE=$(shell_quote "$STATE") $(shell_quote "$FM_ROOT/bin/fm-pr-check.sh") $ID {url}"
 
 if [ "$KIND" = secondmate ]; then
 SECONDMATE_PROJECTS=""

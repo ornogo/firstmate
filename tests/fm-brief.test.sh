@@ -379,7 +379,7 @@ test_pr_delivering_briefs_carry_the_whole_worker_landed_contract() {
       "$mode: brief lost the done-means-merged statement"
     assert_grep '**Record the PR the moment it exists.**' "$brief" \
       "$mode: brief lost the PR-recording statement"
-    assert_grep "bin/fm-pr-check.sh $id {url}" "$brief" \
+    assert_grep "bin/fm-pr-check.sh' $id {url}" "$brief" \
       "$mode: brief does not name the exact fm-pr-check.sh invocation for this task"
     assert_grep 'is a HARD STOP' "$brief" \
       "$mode: a failed recording must be a hard stop, not a warning"
@@ -430,14 +430,18 @@ test_pr_delivering_briefs_carry_the_whole_worker_landed_contract() {
 # code root, finds no metadata, and trips the hard stop on every PR delivery. A
 # text assertion cannot see that, so run what the brief actually tells the worker
 # to run, from an environment carrying no FM_HOME at all, and check where pr=
-# landed.
+# landed. Both the home and the code root carry a space here, because the worker
+# runs this line verbatim and recording is a hard gate: an unquoted path would
+# block delivery outright in a checkout under such a path.
 test_the_rendered_pr_recording_command_targets_this_home() {
-  local home fakebin id brief cmd url
-  home="$TMP_ROOT/pr-check-home"
+  local home fakebin spaced_root id brief cmd url
+  home="$TMP_ROOT/pr check home"
   fakebin="$TMP_ROOT/pr-check-bin"
+  spaced_root="$TMP_ROOT/code root with space"
   id="brief-prcheck"
   url="https://github.com/o/r/pull/7"
   mkdir -p "$home/data" "$home/state" "$fakebin"
+  ln -snf "$ROOT" "$spaced_root"
 
   # Stands in for the forge lookup of the PR head; fm-pr-check.sh treats an
   # absent sha as merely unavailable, so this keeps the test off the network
@@ -450,8 +454,8 @@ esac
 SH
   chmod +x "$fakebin/gh"
 
-  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode direct-PR >/dev/null 2>&1 \
-    || fail "$id: scaffold should exit 0"
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$spaced_root" "$ROOT/bin/fm-brief.sh" "$id" some-proj \
+    --mode direct-PR >/dev/null 2>&1 || fail "$id: scaffold should exit 0"
   brief="$home/data/$id/brief.md"
 
   fm_write_meta "$home/state/$id.meta" \
@@ -465,7 +469,7 @@ SH
 
   # Take the command out of the generated brief rather than rebuilding it here,
   # so the test breaks if the brief stops handing over a runnable one.
-  cmd=$(grep -o "FM_HOME=[^\`]*fm-pr-check\.sh $id {url}" "$brief" | head -1)
+  cmd=$(grep -o "FM_HOME=[^\`]*fm-pr-check\.sh' $id {url}" "$brief" | head -1)
   [ -n "$cmd" ] || fail "brief does not render a self-contained fm-pr-check.sh command"
   cmd=${cmd/\{url\}/$url}
 
