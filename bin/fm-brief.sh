@@ -37,9 +37,12 @@
 # no-mistakes-prod-only is a registry policy, not a task mode; resolve it to one of
 # the three concrete modes at intake before calling this script.
 # The generated ship brief records the chosen mode as a fixed machine-readable
-# "Delivery contract: mode=<mode>" line. bin/fm-spawn.sh reads that line and refuses
-# to launch a ship task whose explicit --mode disagrees, so an adjusted brief and the
-# recorded task metadata cannot drift apart.
+# "Delivery contract: mode=<mode>" line in its header region, above the task-body
+# delimiter and beside the sentinel. bin/fm-spawn.sh reads that line and refuses to
+# launch a ship task whose explicit --mode disagrees, so an adjusted brief and the
+# recorded task metadata cannot drift apart. It lives in the header rather than in
+# the definition of done because the header is the only region a task description
+# cannot reach; bin/fm-brief-contract-lib.sh owns why that matters.
 # Every generated ship and scout brief also carries the literal
 # "DELIVERY-CONTRACT: worker-landed-lite v1" sentinel in its header region, above
 # the fixed task-body delimiter that opens {TASK}. bin/fm-brief-contract-lib.sh is
@@ -405,16 +408,14 @@ EOF
 DELIVERY_CONTRACT_LOCAL_ONLY=${DELIVERY_CONTRACT_LOCAL_ONLY%$'\n'}
 
 # Ship task: shape Setup / Rule 1 / Definition of done by this task's explicit
-# delivery mode, validated above. The generated DOD opens with the fixed
-# "Delivery contract: mode=<mode>" line that bin/fm-spawn.sh checks against its own
-# explicit --mode before launching.
+# delivery mode, validated above. The machine-readable record of that mode is the
+# header's "Delivery contract: mode=<mode>" line, not anything in the DOD below.
 case "$MODE" in
   direct-PR)
     SETUP2=""
     RULE1='1. Never push to the default branch (push only your `fm/'"$ID"'` branch). Never merge a PR.'
     IFS= read -r -d '' DOD <<EOF || true
 # Definition of done
-Delivery contract: mode=direct-PR
 This task ships **direct-PR**: you raise the PR yourself, without the no-mistakes pipeline.
 Do NOT run /no-mistakes.
 When the change is implemented and committed, push your branch and open a PR with \`gh-axi\`.
@@ -434,7 +435,6 @@ EOF
     RULE1="1. Never push to any remote and never open a PR. Work only on your \`fm/$ID\` branch; firstmate handles the merge into local \`main\`."
     IFS= read -r -d '' DOD <<EOF || true
 # Definition of done
-Delivery contract: mode=local-only
 This task ships **local-only**: no remote, no PR, no pipeline.
 The task is complete only when committed on your branch \`fm/$ID\`. Do NOT push, do NOT open a PR, do NOT merge.
 Keep your branch a clean fast-forward onto the current default branch - if \`main\` has advanced, rebase onto it so the eventual merge stays a fast-forward.
@@ -448,7 +448,6 @@ EOF
     RULE1='1. Never push to the default branch. Never merge a PR.'
     IFS= read -r -d '' DOD <<EOF || true
 # Definition of done
-Delivery contract: mode=no-mistakes
 This mode has two stages, and only the second one can end the task.
 Stage one is the implementation. When you believe it is implemented and committed on your branch, append \`done: {summary}\` to the status file and stop.
 That line is the mid-task handoff delivery-contract step 1 refers to: it reports the implementation, not the delivery.
@@ -494,6 +493,7 @@ fi
 cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
 $FM_DELIVERY_CONTRACT_SENTINEL
+$FM_BRIEF_DELIVERY_MODE_PREFIX$MODE
 
 $FM_BRIEF_TASK_BODY_DELIMITER
 {TASK}

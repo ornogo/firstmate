@@ -221,10 +221,13 @@ fm_test_write_brief() {
   mkdir -p "$dir"
   {
     printf '%s\n' 'You are a crewmate.'
-    printf '%s\n\n' "$FM_DELIVERY_CONTRACT_SENTINEL"
-    printf '%s\n' "$FM_BRIEF_TASK_BODY_DELIMITER"
-    printf 'Fixture brief for %s.\n\n' "$label"
-    [ -z "$mode" ] || printf 'Delivery contract: mode=%s\n' "$mode"
+    printf '%s\n' "$FM_DELIVERY_CONTRACT_SENTINEL"
+    # Both contract facts go in the header region, above the delimiter, because
+    # that is the only region fm-spawn.sh reads them from. An empty mode omits
+    # the line entirely, which is the shape of a scout brief.
+    [ -z "$mode" ] || printf '%s%s\n' "$FM_BRIEF_DELIVERY_MODE_PREFIX" "$mode"
+    printf '\n%s\n' "$FM_BRIEF_TASK_BODY_DELIMITER"
+    printf 'Fixture brief for %s.\n' "$label"
   } > "$path"
 }
 
