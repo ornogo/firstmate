@@ -1095,6 +1095,78 @@ startup_memory_budget_setup() {
   fi
 }
 
+# Create dest holding content, and only when nothing is there. Success means dest
+# exists afterwards, whether this call wrote it or found it already written; an
+# existing file is never read, replaced, or repaired, because the file this
+# provisions is a live record owned by whoever wrote it.
+admission_write_if_absent() {
+  local dest=$1 content=$2 parent tmp
+  if [ -e "$dest" ] || [ -L "$dest" ]; then
+    return 0
+  fi
+  # A dest with no slash refuses rather than falling back to ".": this writes the
+  # only record of which efforts are admitted, and resolving it against whatever
+  # directory bootstrap happens to be standing in is a worse outcome than the
+  # ADMISSION line the caller prints when this returns non-zero.
+  parent=${dest%/*}
+  [ "$parent" != "$dest" ] || return 1
+  mkdir -p "$parent" 2>/dev/null || return 1
+  tmp=$(umask 077; mktemp "$parent/.fm-admission.XXXXXX" 2>/dev/null) || return 1
+  if ! printf '%s\n' "$content" > "$tmp" || ! chmod 600 "$tmp"; then
+    rm -f -- "$tmp"
+    return 1
+  fi
+  # Published with ln, not mv. mv replaces its destination without asking, and
+  # the file being published is the only record of which efforts are currently
+  # admitted; losing it frees every admission at once. A hard link fails outright
+  # when dest already exists, so "never replace" is a property of the publish
+  # itself rather than a window between a check and a rename that a concurrent
+  # bootstrap of the same home could land in. Both files sit in the same
+  # directory, so there is no cross-device case to fall back from.
+  if ln -- "$tmp" "$dest" 2>/dev/null; then
+    rm -f -- "$tmp"
+    return 0
+  fi
+  rm -f -- "$tmp"
+  # The link failed either because something is already there - which is success,
+  # the ledger exists and was never this call's to touch - or because the
+  # directory could not take it, which the caller reports.
+  if [ -e "$dest" ] || [ -L "$dest" ]; then
+    return 0
+  fi
+  return 1
+}
+
+# The admission guard's ledger (see bin/fm-admit.sh). Provisioned here so the
+# guard can distinguish "nothing is admitted" from "the ledger is gone": a
+# missing ledger is a refusal, never an empty one, and that only works if some
+# step reliably creates the empty object.
+#
+# This deliberately does NOT write config/admission, which is what actually arms
+# the guard for a home. Arming is the founder's call and stays a hand-written
+# file, so bootstrapping an existing home cannot make it start refusing spawns
+# that worked yesterday. A home therefore ends up with a ledger and no guard,
+# which is inert; the reverse - armed with no ledger - refuses every spawn, and
+# is the state this exists to keep unreachable.
+#
+# A secondmate is skipped for the reason startup_memory_budget_setup skips it,
+# sharpened: config/admission is deliberately absent from FM_INHERITABLE_CONFIG,
+# and a secondmate home holding its own ledger would carry its own independent
+# ADMIT_CAP slot - quietly multiplying a cap that is meant to be one live effort
+# across the fleet.
+admission_guard_provision() {
+  local ledger="$DATA/admission-ledger.json"
+  if [ -e "$FM_HOME/.fm-secondmate-home" ] || [ -L "$FM_HOME/.fm-secondmate-home" ]; then
+    return 0
+  fi
+  # Silent on success: an unarmed home gained an empty file and nothing about
+  # spawning changed, which is not an actionable problem and not a fact worth a
+  # line. Failure is actionable, because a home armed later without this file
+  # refuses everything.
+  admission_write_if_absent "$ledger" '{}' \
+    || echo "ADMISSION: could not provision $ledger - create it holding {} before turning the guard on in config/admission"
+}
+
 if [ "${1:-}" = "install" ]; then
   shift
   [ $# -gt 0 ] || { echo "usage: fm-bootstrap.sh install <tool>..." >&2; exit 1; }
@@ -1223,6 +1295,10 @@ if [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" != 1 ]; then
       fm_timing_record phase handoff-delivery "$__fm_timing_stamp"
     fi
   fi
+  # Both write local artifacts only and never leave the machine. The ledger goes
+  # in before x_mode_setup for no reason beyond keeping the cheapest, most
+  # failure-free step first; nothing spawns until this whole block returns.
+  local_phase && admission_guard_provision
   # x_mode_setup writes local Relay artifacts only and never leaves the machine.
   local_phase && x_mode_setup
   if network_phase && network_sweep_authorized 'project clone refresh'; then

@@ -881,6 +881,71 @@ test_routine_bootstrap_contract_runs_under_system_bash() {
   pass "bootstrap routine contract runs under system /bin/bash"
 }
 
+# Same fixture as the routine cases, but the home is returned so a case can
+# inspect what bootstrap left on disk rather than only what it printed.
+run_admission_bootstrap_fixture() {
+  local case_dir=$1 fixture root home fakebin
+  fixture=$(make_routine_bootstrap_fixture "$case_dir")
+  root=${fixture%%|*}
+  fixture=${fixture#*|}
+  home=${fixture%%|*}
+  fakebin=${fixture#*|}
+  ADMISSION_OUT=$(PATH="$fakebin:$BASE_PATH" FM_BACKEND=tmux FM_HOME="$home" \
+    FM_ROOT_OVERRIDE="$root" FM_FAKE_TREEHOUSE_LEASE_HELP=1 \
+    bash "$ROOT/bin/fm-bootstrap.sh" 2>&1)
+  ADMISSION_HOME=$home
+}
+
+# The admission ledger is provisioned so bin/fm-admit.sh can keep treating a
+# MISSING ledger as a refusal rather than as "nothing is admitted yet". Two
+# properties are load-bearing and both are asserted here: the file appears
+# holding an empty object, and config/admission does NOT, because arming the
+# guard is the founder's decision and a bootstrap that armed it would make every
+# existing home start refusing spawns that worked the day before.
+test_bootstrap_provisions_the_admission_ledger_unarmed() {
+  local ADMISSION_OUT ADMISSION_HOME
+  run_admission_bootstrap_fixture "$TMP_ROOT/admission-fresh"
+  [ -z "$ADMISSION_OUT" ] || fail "provisioning the admission ledger should be silent, got: $ADMISSION_OUT"
+  assert_present "$ADMISSION_HOME/data/admission-ledger.json" \
+    "bootstrap did not provision data/admission-ledger.json"
+  [ "$(cat "$ADMISSION_HOME/data/admission-ledger.json")" = '{}' ] \
+    || fail "provisioned ledger should hold an empty object, got: $(cat "$ADMISSION_HOME/data/admission-ledger.json")"
+  assert_absent "$ADMISSION_HOME/config/admission" \
+    "bootstrap armed the admission guard; arming is the founder's decision, not a session-start side effect"
+  pass "bootstrap provisions an empty admission ledger silently and leaves the guard unarmed"
+}
+
+# The ledger records which efforts are live right now, so a second bootstrap -
+# every subsequent session start - must not touch it. Overwriting it with {}
+# would silently free every held slot while the workers are still running.
+test_bootstrap_never_overwrites_a_live_admission_ledger() {
+  local ADMISSION_OUT ADMISSION_HOME live
+  live='{"ORN-1":{"branch":"feat/orn-1-x","worktree":"/pool/wt-1"}}'
+  run_admission_bootstrap_fixture "$TMP_ROOT/admission-live"
+  printf '%s\n' "$live" > "$ADMISSION_HOME/data/admission-ledger.json"
+  ADMISSION_OUT=$(PATH="$PATH" FM_BACKEND=tmux FM_HOME="$ADMISSION_HOME" \
+    FM_BOOTSTRAP_NETWORK=skip bash "$ROOT/bin/fm-bootstrap.sh" 2>&1 || true)
+  [ "$(cat "$ADMISSION_HOME/data/admission-ledger.json")" = "$live" ] \
+    || fail "a second bootstrap overwrote a ledger holding live admissions"
+  pass "bootstrap leaves an existing admission ledger exactly as it found it"
+}
+
+# config/admission is deliberately absent from FM_INHERITABLE_CONFIG, so a
+# secondmate never inherits its primary's guard. Giving a secondmate home its own
+# ledger would hand it an independent ADMIT_CAP slot and quietly multiply a cap
+# that is meant to be one live effort across the fleet.
+test_bootstrap_skips_the_admission_ledger_for_a_secondmate() {
+  local home
+  home="$TMP_ROOT/admission-secondmate/home"
+  mkdir -p "$home/config" "$home/state"
+  printf '%s\n' sm > "$home/.fm-secondmate-home"
+  PATH="$PATH" FM_BACKEND=tmux FM_HOME="$home" FM_BOOTSTRAP_NETWORK=skip \
+    bash "$ROOT/bin/fm-bootstrap.sh" >/dev/null 2>&1 || true
+  assert_absent "$home/data/admission-ledger.json" \
+    "a secondmate home was given its own admission ledger, which is a second independent ADMIT_CAP slot"
+  pass "bootstrap provisions no admission ledger in a secondmate home"
+}
+
 # FM_BOOTSTRAP_NETWORK splits one bootstrap run into its local and network
 # halves so a session start can compose its digest from the local half alone and
 # run the network half concurrently. The property that has to hold is that the
@@ -1168,6 +1233,9 @@ test_fleet_sync_timeout_empty_override_uses_default
 test_fleet_sync_timeout_is_computed_before_launch
 test_routine_bootstrap_confirmations_are_silent
 test_routine_bootstrap_contract_runs_under_system_bash
+test_bootstrap_provisions_the_admission_ledger_unarmed
+test_bootstrap_never_overwrites_a_live_admission_ledger
+test_bootstrap_skips_the_admission_ledger_for_a_secondmate
 test_network_phase_partitions_the_run
 test_network_sweeps_recheck_lock_ownership
 test_network_phases_record_per_step_elapsed_times

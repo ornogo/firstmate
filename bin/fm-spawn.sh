@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Spawn a direct report: a crewmate in a treehouse or Orca worktree, or a
 # secondmate in its isolated firstmate home.
-# Usage: fm-spawn.sh <task-id> <project-dir> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>]
+# Usage: fm-spawn.sh <task-id> <project-dir> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] [--branch <name> --worktree <path>]
 #        fm-spawn.sh <task-id> <project-dir> --scout [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>]
 #        fm-spawn.sh <task-id> [<firstmate-home>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] --secondmate
 #   --mode and --yolo are this task's delivery contract, REQUIRED for every ship
@@ -16,6 +16,25 @@
 #   loud one-line deviation notice is printed and the spawn continues.
 #   no-mistakes-prod-only is a registry policy rather than a task mode and is
 #   refused as a flag value.
+#   --branch <name> and --worktree <path> name the effort a ship spawn is for.
+#   They are REQUIRED for a fresh ship spawn on a home whose admission guard is
+#   on, and REFUSED everywhere else - on --scout, --secondmate, --relaunch, in a
+#   batch, and on a home whose guard is off - so passing them can never yield a
+#   silently unguarded spawn. The guard is on when config/admission carries "on"
+#   as its first non-empty line, which the founder writes by hand; a home with no
+#   such file (every test fixture, and every home today) is off. Bootstrap
+#   provisions the empty data/admission-ledger.json but deliberately does not arm
+#   the guard, so no existing home starts refusing spawns at its next session
+#   start without the founder asking for it.
+#   The pair goes to bin/fm-admit.sh, which reserves the branch's Linear issue
+#   key in that ledger BEFORE this script creates any endpoint; its refusal
+#   stops the spawn with nothing created. They are declared rather than derived
+#   because the worktree is not knowable in advance: treehouse hands one out
+#   only after the window exists, so a derived value would arrive too late to
+#   guard anything. Once treehouse get answers, the worktree it leased is
+#   checked against the admitted one and a mismatch refuses - by then the
+#   reservation exists, and it is left in the ledger for founder release rather
+#   than auto-cleared, which is the conservative direction.
 #        fm-spawn.sh <task-id> --relaunch [--harness <name>] [--model <name>] [--effort <level>]
 #   --relaunch launches a replacement agent for an EXISTING task into that
 #   task's own recorded endpoint and worktree instead of creating either. It is
@@ -263,6 +282,9 @@ BACKEND_ARG=
 MODE=
 YOLO=
 TRACEPARENT_ARG=
+ADMIT_BRANCH=
+ADMIT_WORKTREE=
+ADMIT_WORKTREE_REAL=
 HARNESS_SET=0
 MODEL_SET=0
 EFFORT_SET=0
@@ -270,6 +292,8 @@ BACKEND_SET=0
 MODE_SET=0
 YOLO_SET=0
 TRACEPARENT_SET=0
+ADMIT_BRANCH_SET=0
+ADMIT_WORKTREE_SET=0
 RELAUNCH=0
 POS=()
 want_value=
@@ -286,6 +310,8 @@ for a in "$@"; do
       mode) MODE=$a; MODE_SET=1 ;;
       yolo) YOLO=$a; YOLO_SET=1 ;;
       traceparent) TRACEPARENT_ARG=$a; TRACEPARENT_SET=1 ;;
+      branch) ADMIT_BRANCH=$a; ADMIT_BRANCH_SET=1 ;;
+      worktree) ADMIT_WORKTREE=$a; ADMIT_WORKTREE_SET=1 ;;
       *) echo "error: internal parser state for --$want_value" >&2; exit 1 ;;
     esac
     want_value=
@@ -309,6 +335,10 @@ for a in "$@"; do
     --yolo=*) YOLO=${a#--yolo=}; YOLO_SET=1 ;;
     --traceparent) want_value=traceparent ;;
     --traceparent=*) TRACEPARENT_ARG=${a#--traceparent=}; TRACEPARENT_SET=1 ;;
+    --branch) want_value=branch ;;
+    --branch=*) ADMIT_BRANCH=${a#--branch=}; ADMIT_BRANCH_SET=1 ;;
+    --worktree) want_value=worktree ;;
+    --worktree=*) ADMIT_WORKTREE=${a#--worktree=}; ADMIT_WORKTREE_SET=1 ;;
     *) POS+=("$a") ;;
   esac
 done
@@ -320,6 +350,8 @@ done
 [ "$MODE_SET" -eq 0 ] || [ -n "$MODE" ] || { echo "error: --mode requires a non-empty value" >&2; exit 1; }
 [ "$YOLO_SET" -eq 0 ] || [ -n "$YOLO" ] || { echo "error: --yolo requires a non-empty value" >&2; exit 1; }
 [ "$TRACEPARENT_SET" -eq 0 ] || [ -n "$TRACEPARENT_ARG" ] || { echo "error: --traceparent requires a non-empty value" >&2; exit 1; }
+[ "$ADMIT_BRANCH_SET" -eq 0 ] || [ -n "$ADMIT_BRANCH" ] || { echo "error: --branch requires a non-empty value" >&2; exit 1; }
+[ "$ADMIT_WORKTREE_SET" -eq 0 ] || [ -n "$ADMIT_WORKTREE" ] || { echo "error: --worktree requires a non-empty value" >&2; exit 1; }
 # A parent-delivered carrier replaces this home's own resolution, so it is
 # refused unless it is a secondmate spawn carrying a strictly valid W3C value.
 # Nothing else may reach the pane's TRACEPARENT export.
@@ -338,12 +370,62 @@ case "$EFFORT" in
   *) echo "error: --effort must be one of low, medium, high, xhigh, max" >&2; exit 1 ;;
 esac
 
+# Admission guard mode for this home, read like config/backend and
+# config/crew-harness: the first non-blank line, surrounding whitespace removed.
+# Absent file means off, which is what keeps every test fixture home and every
+# home bootstrapped before the guard existed spawning unchanged. Any other
+# content is a refusal, not a fallback to off: a typo in the file that governs
+# whether the guard runs must never resolve to "do not guard".
+#
+# That rule is why this reader is stricter than the other two. The default is
+# cleared again inside the branch so that "absent" is the only thing meaning
+# off, and anything present but unusable - a blank file, a directory, a dangling
+# symlink, a file this process cannot read - takes the same refusal as a
+# misspelled value rather than passing for a decision to spawn unguarded.
+ADMIT_MODE=off
+if [ -e "$CONFIG/admission" ] || [ -L "$CONFIG/admission" ]; then
+  ADMIT_MODE=
+  if [ ! -f "$CONFIG/admission" ] || [ ! -r "$CONFIG/admission" ]; then
+    echo "error: $CONFIG/admission exists but is not a readable regular file; refusing rather than reading a broken config as 'off' and spawning unguarded" >&2
+    exit 1
+  fi
+  while IFS= read -r admit_mode_line || [ -n "$admit_mode_line" ]; do
+    # Surrounding whitespace only. Deleting internal whitespace as well would
+    # turn 'o ff' into the valid value 'off' - a malformed config resolving to
+    # "do not guard", which is the exact outcome this block exists to stop.
+    admit_mode_line=$(printf '%s' "$admit_mode_line" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+    [ -n "$admit_mode_line" ] || continue
+    ADMIT_MODE=$admit_mode_line
+    break
+  done < "$CONFIG/admission"
+  case "$ADMIT_MODE" in
+    on|off) ;;
+    *)
+      echo "error: $CONFIG/admission must say 'on' or 'off' (got '$ADMIT_MODE'); refusing rather than guessing whether this home's spawns are guarded" >&2
+      exit 1
+      ;;
+  esac
+fi
+# bin/fm-admit.sh deliberately has no FM_DATA_OVERRIDE: it resolves its ledger
+# as $FM_HOME/data. A spawn whose own DATA has been pointed elsewhere would
+# therefore guard a different directory than it works in, so refuse rather than
+# admit against the wrong ledger.
+if [ "$ADMIT_MODE" = on ] && [ "$DATA" != "$FM_HOME/data" ]; then
+  echo "error: the admission guard reads its ledger from \$FM_HOME/data ('$FM_HOME/data'), but this spawn's data directory is '$DATA'; set FM_HOME instead of FM_DATA_OVERRIDE, or turn the guard off in $CONFIG/admission" >&2
+  exit 1
+fi
+
 # --relaunch reuses an existing task's endpoint, worktree, project, and kind,
 # so every axis this block resolves for a fresh spawn instead comes from that
 # task's own durable record below. Contradicting it on the command line is a
 # refusal rather than a silently-ignored flag.
 if [ "$RELAUNCH" -eq 1 ]; then
   [ "$BACKEND_SET" -eq 0 ] || { echo "error: --relaunch reuses the task's recorded backend; --backend cannot override it" >&2; exit 1; }
+  # A relaunch replaces the agent in an effort that was already admitted; its
+  # ledger entry is still held, so re-admitting would refuse as a duplicate and
+  # supplying a different binding would contradict the entry that exists.
+  [ "$ADMIT_BRANCH_SET" -eq 0 ] || { echo "error: --relaunch reuses the effort already admitted for this task; --branch cannot re-declare it" >&2; exit 1; }
+  [ "$ADMIT_WORKTREE_SET" -eq 0 ] || { echo "error: --relaunch reuses the effort already admitted for this task; --worktree cannot re-declare it" >&2; exit 1; }
   [ "$KIND_SET" -eq 0 ] || { echo "error: --relaunch reuses the task's recorded kind; --scout/--secondmate cannot override it" >&2; exit 1; }
   [ "$MODE_SET" -eq 0 ] || { echo "error: --relaunch reuses the task's recorded delivery mode; --mode cannot override it" >&2; exit 1; }
   [ "$YOLO_SET" -eq 0 ] || { echo "error: --relaunch reuses the task's recorded yolo posture; --yolo cannot override it" >&2; exit 1; }
@@ -372,7 +454,26 @@ else
       on|off) ;;
       *) echo "error: --yolo must be on or off (got '$YOLO')" >&2; exit 1 ;;
     esac
+    # The guard is the whole point of a guarded home, so on this path the pair
+    # is required rather than optional; a ship spawn that could opt out of it by
+    # omitting a flag would not be a guard at all. Both or neither: one alone is
+    # an incomplete effort declaration, never a partial admission.
+    if [ "$ADMIT_MODE" = on ]; then
+      [ "$ADMIT_BRANCH_SET" -eq 1 ] && [ "$ADMIT_WORKTREE_SET" -eq 1 ] || {
+        echo "error: this home's admission guard is on ($CONFIG/admission), so a ship spawn requires --branch <name> and --worktree <path> naming the effort to admit" >&2
+        exit 1
+      }
+    else
+      [ "$ADMIT_BRANCH_SET" -eq 0 ] && [ "$ADMIT_WORKTREE_SET" -eq 0 ] || {
+        echo "error: --branch/--worktree declare an effort to admit, but this home's admission guard is off (no 'on' in $CONFIG/admission); refusing rather than spawning unguarded with the flags accepted" >&2
+        exit 1
+      }
+    fi
   else
+    [ "$ADMIT_BRANCH_SET" -eq 0 ] && [ "$ADMIT_WORKTREE_SET" -eq 0 ] || {
+      echo "error: --branch/--worktree apply only to ship spawns; a scout delivers a report and a secondmate runs in its own home, and neither reserves a delivery branch" >&2
+      exit 1
+    }
     [ "$MODE_SET" -eq 0 ] || {
       echo "error: --mode applies only to ship spawns; a scout delivers a report and a secondmate records its own fixed posture" >&2
       exit 1
@@ -845,6 +946,14 @@ if [ "${#POS[@]}" -gt 0 ] && [ "${POS[0]}" != "$idpart" ] && case "$idpart" in *
     echo "error: config/crew-dispatch.json is active - pass an explicit harness resolved from the dispatch rules (the consultation backstop, so the rules are never silently skipped)." >&2
     exit 1
   fi
+  # --branch/--worktree name ONE effort, so there is no coherent shared value for
+  # a batch and they are deliberately absent from shared_args below. Refusing here
+  # rather than dropping them keeps a founder from believing a batch was admitted
+  # under the pair they typed.
+  if [ "$ADMIT_BRANCH_SET" -eq 1 ] || [ "$ADMIT_WORKTREE_SET" -eq 1 ]; then
+    echo "error: --branch/--worktree name a single effort and are refused in a batch; spawn each admitted ship task explicitly" >&2
+    exit 1
+  fi
   rc=0
   shared_args=()
   [ -z "$HARNESS_ARG" ] || shared_args+=(--harness "$HARNESS_ARG")
@@ -946,6 +1055,14 @@ if [ "$RELAUNCH" -eq 0 ]; then
   fi
   if [ "$BACKEND" = cmux ] && [ "$KIND" = secondmate ]; then
     echo "error: backend=cmux does not support --secondmate spawns yet" >&2
+    exit 1
+  fi
+  # Orca owns both the worktree and the terminal, creating the worktree itself
+  # instead of leasing a pooled one, so an admitted --worktree could never be the
+  # one the task ends up in and the post-lease binding check would have nothing
+  # true to compare. Every other spawn-capable backend goes through treehouse get.
+  if [ "$BACKEND" = orca ] && [ "$ADMIT_MODE" = on ] && [ "$KIND" = ship ]; then
+    echo "error: backend=orca creates its own worktree rather than leasing an admitted one, so it cannot be admitted; spawn orca tasks from a home whose admission guard is off" >&2
     exit 1
   fi
   if [ "$BACKEND" = orca ]; then
@@ -1802,6 +1919,35 @@ herdr_projection_existing_meta_allows_flat() {  # <meta>
   esac
 }
 
+# The audited admission seam. Everything above this line is validation that
+# creates nothing; the backend block below is the first spawn-side mutation, so
+# this is the last point at which a refusal still leaves no endpoint, no lease,
+# and no branch. bin/fm-admit.sh takes its own ledger lock and does the whole
+# read-validate-decide-write cycle inside it, so this call is the linearization
+# point for the cap, not the surrounding spawn lock (which is per-task-id and
+# says nothing about two different tasks racing).
+#
+# A reservation that succeeds here is NOT unwound if the spawn later fails.
+# spawn_abort_cleanup releases locks and removes artifacts it created, but a
+# ledger entry is a claim on an effort, and dropping it on a spawn that may have
+# already made a branch or taken a lease is the fail-open direction. The entry
+# stays visible for `fm-admit.sh release`, which is the founder's runbook step.
+if [ "$ADMIT_MODE" = on ] && [ "$RELAUNCH" -eq 0 ] && [ "$KIND" = ship ]; then
+  [ -d "$ADMIT_WORKTREE" ] || {
+    echo "error: --worktree '$ADMIT_WORKTREE' is not an existing directory; a pooled worktree exists before it is leased, so this is a typo rather than a race" >&2
+    exit 1
+  }
+  # The guard's own exit status is passed through rather than collapsed: it
+  # separates a refusal (1) from a usage error (2), and a caller that cannot tell
+  # "this effort is already admitted" from "this script called the guard wrong"
+  # cannot act on either.
+  admit_rc=0
+  FM_HOME="$FM_HOME" "$FM_ROOT/bin/fm-admit.sh" admit \
+    --branch "$ADMIT_BRANCH" --worktree "$ADMIT_WORKTREE" || admit_rc=$?
+  [ "$admit_rc" -eq 0 ] || exit "$admit_rc"
+  ADMIT_WORKTREE_REAL=$(real_path_or_raw "$ADMIT_WORKTREE")
+fi
+
 W="fm-$ID"
 if [ "$RELAUNCH" -eq 1 ]; then
   # Adopt the recorded endpoint instead of creating one. This is what keeps a
@@ -2216,6 +2362,21 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   fi
 
   validate_spawn_worktree "treehouse get" "$T"
+fi
+# The admitted binding, verified against the worktree the pool actually handed
+# out. The reservation had to be written before this - treehouse only answers
+# once the window exists - so this check runs after the mutation it guards, and
+# its job is to catch a spawn that landed somewhere other than the effort it was
+# admitted for rather than to prevent the lease. Both sides are compared
+# physically resolved, because the pool and the founder can spell one worktree
+# differently (a symlinked pool root is the routine case) and a string mismatch
+# there would refuse a spawn that is in exactly the right place.
+if [ -n "$ADMIT_WORKTREE_REAL" ]; then
+  wt_leased_real=$(real_path_or_raw "$WT")
+  [ "$wt_leased_real" = "$ADMIT_WORKTREE_REAL" ] || {
+    echo "error: this task was admitted for worktree '$ADMIT_WORKTREE' but the pool leased '$WT'; the admission entry for branch '$ADMIT_BRANCH' is still held - release it with 'bin/fm-admit.sh release <issue-key>' once the lease and window are dispositioned" >&2
+    exit 1
+  }
 fi
 if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ]; then
   freshen_spawn_worktree_base "$WT" || exit 1
