@@ -18,9 +18,10 @@
 #   refused as a flag value.
 #   --branch <name> and --worktree <path> name the effort a ship spawn is for.
 #   They are REQUIRED for a fresh ship spawn on a home whose admission guard is
-#   on, and REFUSED everywhere else - on --scout, --secondmate, --relaunch, in a
-#   batch, and on a home whose guard is off - so passing them can never yield a
-#   silently unguarded spawn. The guard is on when config/admission carries "on"
+#   on, and REFUSED everywhere else - on --scout, --secondmate, --relaunch,
+#   --resume, in a batch, and on a home whose guard is off - so passing them can
+#   never yield a silently unguarded spawn.
+#   The guard is on when config/admission carries "on"
 #   as its first non-empty line, which the founder writes by hand; a home with no
 #   such file (every test fixture, and every home today) is off. Bootstrap
 #   provisions the empty data/admission-ledger.json but deliberately does not arm
@@ -51,6 +52,38 @@
 #   or herdr), refuses unless the endpoint's shell is sitting in the recorded
 #   worktree, and clears the previous harness's per-task wiring before arming
 #   the new incarnation.
+#        fm-spawn.sh --resume <issue-key> [--harness <name>] [--model <name>] [--effort <level>]
+#   --resume restarts an effort the admission guard already admitted and that
+#   quarantine then stopped. It is named by ISSUE KEY, not task id: the ledger
+#   entry is the thing being resumed, and the task is resolved from it (the entry
+#   records the worktree, a worktree is leased to exactly one task, and zero or
+#   several matching records both refuse rather than guess).
+#   It makes no admission decision. Instead it binds to the entry: the key must
+#   have an "active" entry whose recorded branch and worktree match the preserved
+#   effort exactly, no new reservation is written, and no new lease is taken (the
+#   lease stayed held across quarantine). So --branch, --worktree, --backend,
+#   --scout, --secondmate, --relaunch, --mode, --yolo, a project positional, and
+#   batch pairs are all refused alongside it - each would re-declare or contradict
+#   something the entry or the task's own record already fixes - and only harness,
+#   model, and effort may change, exactly as for a relaunch.
+#   It is a third mode, not a flag on --relaunch, because the two want opposite
+#   things from the recorded endpoint: --relaunch ADOPTS it and requires it to be
+#   positively agent-free, while --resume expects it to be GONE (quarantine
+#   stopped the VM) and refuses if the window is still there. Resume therefore
+#   creates a new window like a fresh spawn, adopts the worktree like a relaunch,
+#   and cd's into it rather than running `treehouse get`.
+#   The whole decision runs under the ledger's own exclusive bounded-wait lock,
+#   held from the binding check through window creation, so two concurrent
+#   resumes of one effort yield exactly one worker. Inside that lock, an existing
+#   window refuses; and because a worker can outlive its window, an absent window
+#   is never taken as proof on its own - the same confirmed-dead cwd scan
+#   bin/fm-teardown.sh step 1 runs must positively report no surviving process
+#   under the worktree or the task tmpdir. A scan that cannot answer refuses too.
+#   Implemented for the tmux backend only: the window-presence refusal is only as
+#   good as the backend's ability to answer "does this window exist?", and
+#   widening that to four more surfaces buys nothing this mode asked for.
+#   A refusal, for any reason, writes no ledger entry, mutates none, and leaves
+#   no endpoint behind.
 #   --harness <name> is the explicit per-spawn harness/profile adapter. The old
 #   positional harness arg still works for back-compat.
 #   --model <name> and --effort <low|medium|high|xhigh|max> are concrete profile
@@ -233,6 +266,22 @@ resolve_directory_input() {
   printf '%s\n' "$resolved"
 }
 
+# Physical form of a path, or the path unchanged when it cannot be resolved.
+# Deliberately next to resolve_directory_input rather than beside its first
+# historical caller: --resume's ledger/meta worktree join runs ~800 lines
+# earlier than the post-lease binding check, and a second spelling of path
+# resolution is exactly the hazard bin/fm-proc-cwd-lib.sh was extracted to
+# prevent. Unlike resolve_directory_input this never refuses - a caller that
+# wants a refusal on an unresolvable path checks for one itself.
+real_path_or_raw() {  # <path>
+  local path=$1 real
+  if real=$(cd "$path" 2>/dev/null && pwd -P); then
+    printf '%s\n' "$real"
+  else
+    printf '%s\n' "$path"
+  fi
+}
+
 FM_HOME=$(resolve_directory_input FM_HOME "$FM_HOME") || exit 1
 if [ -n "${FM_STATE_OVERRIDE:-}" ]; then
   FM_STATE_OVERRIDE=$(resolve_directory_input FM_STATE_OVERRIDE "$FM_STATE_OVERRIDE") || exit 1
@@ -267,6 +316,17 @@ SUB_HOME_MARKER=".fm-secondmate-home"
 . "$SCRIPT_DIR/fm-trace-context-lib.sh"
 # shellcheck source=bin/fm-remote-readiness-lib.sh
 . "$SCRIPT_DIR/fm-remote-readiness-lib.sh"
+# --resume reads the admission ledger and holds its lock in THIS shell, from the
+# binding check through worker creation. bin/fm-admit.sh releases the lock on
+# exit by construction, so shelling out to it - the way the fresh-spawn admission
+# seam below does - cannot give resume the coverage it needs.
+# shellcheck source=bin/fm-admit-lib.sh
+. "$SCRIPT_DIR/fm-admit-lib.sh"
+# --resume's confirmed-dead check, the same cwd-attribution scan teardown step 1
+# uses. Fails closed: a non-zero return means the scan could not establish a safe
+# result, never that nothing was found.
+# shellcheck source=bin/fm-proc-cwd-lib.sh
+. "$SCRIPT_DIR/fm-proc-cwd-lib.sh"
 # Fail closed before any fleet mutation: a no-mistakes gate agent must never spawn
 # a direct report (see bin/fm-gate-refuse-lib.sh).
 fm_refuse_if_gate_agent
@@ -295,6 +355,9 @@ TRACEPARENT_SET=0
 ADMIT_BRANCH_SET=0
 ADMIT_WORKTREE_SET=0
 RELAUNCH=0
+RESUME=0
+RESUME_KEY=
+RESUME_KEY_SET=0
 POS=()
 want_value=
 for a in "$@"; do
@@ -312,6 +375,7 @@ for a in "$@"; do
       traceparent) TRACEPARENT_ARG=$a; TRACEPARENT_SET=1 ;;
       branch) ADMIT_BRANCH=$a; ADMIT_BRANCH_SET=1 ;;
       worktree) ADMIT_WORKTREE=$a; ADMIT_WORKTREE_SET=1 ;;
+      resume) RESUME=1; RESUME_KEY=$a; RESUME_KEY_SET=1 ;;
       *) echo "error: internal parser state for --$want_value" >&2; exit 1 ;;
     esac
     want_value=
@@ -339,6 +403,8 @@ for a in "$@"; do
     --branch=*) ADMIT_BRANCH=${a#--branch=}; ADMIT_BRANCH_SET=1 ;;
     --worktree) want_value=worktree ;;
     --worktree=*) ADMIT_WORKTREE=${a#--worktree=}; ADMIT_WORKTREE_SET=1 ;;
+    --resume) want_value=resume ;;
+    --resume=*) RESUME=1; RESUME_KEY=${a#--resume=}; RESUME_KEY_SET=1 ;;
     *) POS+=("$a") ;;
   esac
 done
@@ -352,6 +418,7 @@ done
 [ "$TRACEPARENT_SET" -eq 0 ] || [ -n "$TRACEPARENT_ARG" ] || { echo "error: --traceparent requires a non-empty value" >&2; exit 1; }
 [ "$ADMIT_BRANCH_SET" -eq 0 ] || [ -n "$ADMIT_BRANCH" ] || { echo "error: --branch requires a non-empty value" >&2; exit 1; }
 [ "$ADMIT_WORKTREE_SET" -eq 0 ] || [ -n "$ADMIT_WORKTREE" ] || { echo "error: --worktree requires a non-empty value" >&2; exit 1; }
+[ "$RESUME_KEY_SET" -eq 0 ] || [ -n "$RESUME_KEY" ] || { echo "error: --resume requires a non-empty value" >&2; exit 1; }
 # A parent-delivered carrier replaces this home's own resolution, so it is
 # refused unless it is a secondmate spawn carrying a strictly valid W3C value.
 # Nothing else may reach the pane's TRACEPARENT export.
@@ -415,11 +482,34 @@ if [ "$ADMIT_MODE" = on ] && [ "$DATA" != "$FM_HOME/data" ]; then
   exit 1
 fi
 
-# --relaunch reuses an existing task's endpoint, worktree, project, and kind,
-# so every axis this block resolves for a fresh spawn instead comes from that
-# task's own durable record below. Contradicting it on the command line is a
-# refusal rather than a silently-ignored flag.
-if [ "$RELAUNCH" -eq 1 ]; then
+# --resume restarts a quarantined effort the ledger still holds: the ledger entry
+# fixes the branch and worktree, and the task's own record fixes kind, mode,
+# yolo, project, and backend. Every axis a fresh spawn would resolve here is
+# therefore already decided, so contradicting one is a refusal.
+#
+# It is a third mode, not a flag on --relaunch. --relaunch ADOPTS the recorded
+# endpoint and requires it to read positively dead; resume expects the window to
+# be GONE (quarantine stopped the VM) and treats an existing one as grounds for
+# refusal. Resume creates a new endpoint like a fresh spawn, adopts the worktree
+# like a relaunch, and takes no lease at all.
+if [ "$RESUME" -eq 1 ]; then
+  [ "$RELAUNCH" -eq 0 ] || { echo "error: --resume and --relaunch are different verbs: --relaunch adopts the recorded window, --resume requires it to be gone; pick one" >&2; exit 1; }
+  [ "$KIND_SET" -eq 0 ] || { echo "error: --resume reuses the task's recorded kind; --scout/--secondmate cannot override it" >&2; exit 1; }
+  [ "$BACKEND_SET" -eq 0 ] || { echo "error: --resume reuses the task's recorded backend; --backend cannot override it" >&2; exit 1; }
+  [ "$MODE_SET" -eq 0 ] || { echo "error: --resume reuses the task's recorded delivery mode; --mode cannot override it" >&2; exit 1; }
+  [ "$YOLO_SET" -eq 0 ] || { echo "error: --resume reuses the task's recorded yolo posture; --yolo cannot override it" >&2; exit 1; }
+  # The ledger entry names the branch and worktree this key was admitted for.
+  # Re-declaring either would either restate it or contradict it, and resume
+  # binds against the entry rather than taking a new reservation.
+  [ "$ADMIT_BRANCH_SET" -eq 0 ] || { echo "error: --resume binds to the branch already admitted for this key; --branch cannot re-declare it" >&2; exit 1; }
+  [ "$ADMIT_WORKTREE_SET" -eq 0 ] || { echo "error: --resume binds to the worktree already admitted for this key; --worktree cannot re-declare it" >&2; exit 1; }
+  # The task is resolved from the ledger entry, not from the command line, so a
+  # positional would name a second, contradictory task or project.
+  [ "${#POS[@]}" -eq 0 ] || { echo "error: --resume takes only an issue key; it resolves the task from the admission ledger, so '${POS[0]}' cannot also be named" >&2; exit 1; }
+  # With the guard off there is no ledger, so there is nothing to bind against
+  # and no quarantine that could have produced a resumable effort.
+  [ "$ADMIT_MODE" = on ] || { echo "error: --resume binds to an admission ledger entry, but the admission guard is off for this home; turn it on in $CONFIG/admission" >&2; exit 1; }
+elif [ "$RELAUNCH" -eq 1 ]; then
   [ "$BACKEND_SET" -eq 0 ] || { echo "error: --relaunch reuses the task's recorded backend; --backend cannot override it" >&2; exit 1; }
   # A relaunch replaces the agent in an effort that was already admitted; its
   # ledger entry is still held, so re-admitting would refuse as a duplicate and
@@ -872,6 +962,12 @@ spawn_abort_cleanup() {
     CONFIG_INHERIT_LOCK_HELD=0
     fm_lock_release "$CONFIG_INHERIT_LOCK" || true
   fi
+  # bin/fm-admit-lib.sh installs no trap of its own, precisely so it cannot
+  # silently replace this one; each caller wires the release into the cleanup it
+  # already has. --resume holds the admission lock from its binding check through
+  # worker creation, so every exit between those two points releases it here.
+  # A no-op when resume never acquired it.
+  fm_admit_lock_release
   return "$status"
 }
 trap spawn_abort_cleanup EXIT
@@ -982,9 +1078,108 @@ if [ "${#POS[@]}" -gt 0 ] && [ "${POS[0]}" != "$idpart" ] && case "$idpart" in *
   done
   exit "$rc"
 fi
-ID=${POS[0]}
+# --resume names an issue key, not a task id, so its ID comes from the ledger
+# entry rather than from the command line.
+#
+# The admission lock is taken HERE, before the first ledger read, and released
+# only once the effort's window exists. It cannot be taken any earlier: the EXIT
+# trap that releases it is installed above, and a lock acquired before that trap
+# leaks on every early exit between the two. It cannot be taken any later
+# either - the binding check this block performs is the first thing the lock has
+# to cover, so that two concurrent resumes of one effort serialize and the
+# second sees the window the first created.
+RESUME_LEDGER_WT=
+RESUME_LEDGER_BRANCH=
+if [ "$RESUME" -eq 1 ]; then
+  fm_admit_require_issue_key "$RESUME_KEY" || { echo "error: $FM_ADMIT_ERR" >&2; exit 1; }
+  RESUME_KEY=$FM_ADMIT_ISSUE_KEY
+  fm_admit_resolve_paths "$FM_HOME"
+  fm_admit_lock_acquire || { echo "error: $FM_ADMIT_ERR" >&2; exit 1; }
+  fm_admit_ledger_read || { echo "error: $FM_ADMIT_ERR" >&2; exit 1; }
+  # jq owns each `$` below, exactly as in bin/fm-admit.sh's own JQ_* block: they
+  # name --arg bindings and must reach jq unexpanded. That is also what keeps the
+  # key data - it arrives through --arg and is never spliced into a filter, so a
+  # founder-typed issue key cannot be evaluated as jq.
+  # shellcheck disable=SC2016
+  {
+    JQ_RESUME_STATUS='.[$k].status // "absent"'
+    JQ_RESUME_BRANCH='.[$k].branch'
+    JQ_RESUME_WORKTREE='.[$k].worktree'
+  }
+  # An absent entry and a quarantined one are both refusals, and they are
+  # different mistakes: the first key was never admitted, the second is still
+  # held but has not been cleared for resume.
+  resume_status=$(fm_admit_ledger_query -r --arg k "$RESUME_KEY" "$JQ_RESUME_STATUS")
+  [ "$resume_status" = active ] || {
+    echo "error: --resume requires an active admission entry for $RESUME_KEY, but its status is '$resume_status'; clear a quarantined effort for resume with 'bin/fm-admit.sh resume $RESUME_KEY' first" >&2
+    exit 1
+  }
+  RESUME_LEDGER_BRANCH=$(fm_admit_ledger_query -r --arg k "$RESUME_KEY" "$JQ_RESUME_BRANCH")
+  RESUME_LEDGER_WT=$(fm_admit_ledger_query -r --arg k "$RESUME_KEY" "$JQ_RESUME_WORKTREE")
+  [ -d "$RESUME_LEDGER_WT" ] || {
+    echo "error: $RESUME_KEY is admitted for worktree '$RESUME_LEDGER_WT', which is not an existing directory; the lease is still held - release it with 'bin/fm-admit.sh release $RESUME_KEY' if the effort is gone" >&2
+    exit 1
+  }
+  # The branch half of "the entry's recorded branch and worktree exactly match
+  # the preserved effort". A detached HEAD is a refusal rather than a match:
+  # symbolic-ref fails on one, which is exactly the answer wanted here.
+  resume_head_branch=$(git -C "$RESUME_LEDGER_WT" symbolic-ref --quiet --short HEAD 2>/dev/null) || resume_head_branch=
+  [ "$resume_head_branch" = "$RESUME_LEDGER_BRANCH" ] || {
+    echo "error: $RESUME_KEY is admitted for branch '$RESUME_LEDGER_BRANCH' but '$RESUME_LEDGER_WT' is on '${resume_head_branch:-a detached HEAD}'; refusing rather than resuming an effort onto work the ledger never admitted" >&2
+    exit 1
+  }
+  # A worktree is leased to exactly one task, so the recorded worktree maps back
+  # to exactly one task record. Zero and several are both refusals - guessing
+  # here would resume the wrong task's brief, kind, and delivery contract.
+  # Compared in physical form: the ledger normalizes its worktree but does not
+  # resolve symlinks, while a record's worktree= was written from a logical pwd.
+  resume_ledger_wt_real=$(real_path_or_raw "$RESUME_LEDGER_WT")
+  resume_matches=0
+  resume_id=
+  for meta in "$STATE"/*.meta; do
+    [ -f "$meta" ] || continue
+    meta_wt=$(fm_meta_get "$meta" worktree)
+    [ -n "$meta_wt" ] || continue
+    [ "$(real_path_or_raw "$meta_wt")" = "$resume_ledger_wt_real" ] || continue
+    resume_matches=$((resume_matches + 1))
+    resume_id=${meta##*/}
+    resume_id=${resume_id%.meta}
+  done
+  case "$resume_matches" in
+    1) ID=$resume_id ;;
+    0)
+      echo "error: no task in $STATE records worktree '$RESUME_LEDGER_WT', the worktree $RESUME_KEY is admitted for; there is nothing to resume (release the entry with 'bin/fm-admit.sh release $RESUME_KEY' if the task is gone)" >&2
+      exit 1
+      ;;
+    *)
+      echo "error: $resume_matches tasks in $STATE record worktree '$RESUME_LEDGER_WT'; refusing rather than guessing which one $RESUME_KEY resumes" >&2
+      exit 1
+      ;;
+  esac
+else
+  ID=${POS[0]}
+fi
 fm_task_id_creation_valid "$ID" || { echo "error: invalid task id" >&2; exit 2; }
-if [ "$RELAUNCH" -eq 1 ]; then
+# Resolved with the id rather than at its first use below, because --resume's
+# confirmed-dead check scans this root before any window is created.
+TASK_TMP="/tmp/fm-$ID"
+# --relaunch and --resume differ in what they do with the endpoint, but agree on
+# everything downstream of it: both republish a task record that already exists
+# rather than creating one, both take no lease, and both leave the identity axes
+# to that record. Sites that only care about that shared property read this flag,
+# so the two modes cannot drift apart one forgotten `-eq` at a time. Sites where
+# the two genuinely differ - endpoint adoption, the admitted-effort seam, the
+# pane-cwd check - keep testing RELAUNCH or RESUME by name.
+REUSE_TASK=0
+REUSE_META=
+if [ "$RELAUNCH" -eq 1 ] || [ "$RESUME" -eq 1 ]; then
+  REUSE_TASK=1
+  # The record both modes republish. Named once here, next to the flag whose
+  # sites read it, so the republish machinery below cannot reach for a
+  # mode-specific name and work for only one of the two verbs.
+  REUSE_META="$STATE/$ID.meta"
+fi
+if [ "$REUSE_TASK" -eq 1 ]; then
   SPAWN_CONTROL_LOCK="$STATE/.control-$ID.lock"
   control_owner=$(cat "$SPAWN_CONTROL_LOCK/pid" 2>/dev/null || true)
   if [ "$control_owner" = "$PPID" ] && fm_pid_alive "$control_owner"; then
@@ -996,7 +1191,7 @@ if [ "$RELAUNCH" -eq 1 ]; then
     exit 1
   fi
 fi
-if [ "$RELAUNCH" -eq 0 ]; then
+if [ "$REUSE_TASK" -eq 0 ]; then
   mkdir -p "$STATE" || {
     echo "error: could not create parent state directory" >&2
     exit 1
@@ -1041,7 +1236,7 @@ fi
 # recorded in meta only when it is NOT tmux (fm-teardown.sh and fm-watch.sh's
 # window_backend/fm_backend_of_meta already treat an absent backend= as tmux),
 # so the default path's meta stays byte-identical.
-if [ "$RELAUNCH" -eq 0 ]; then
+if [ "$REUSE_TASK" -eq 0 ]; then
   if [ "$BACKEND_SET" -eq 1 ]; then
     BACKEND=$BACKEND_ARG
   else
@@ -1084,13 +1279,63 @@ FIRSTMATE_HOME=
 # re-launch the task it names. The endpoint identity check is the same shared
 # validation teardown uses, so a malformed, ambiguous, or foreign record
 # refuses here exactly as it refuses there.
-RELAUNCH_PRIOR_HARNESS=
-if [ "$RELAUNCH" -eq 1 ]; then
+REUSE_PRIOR_HARNESS=
+RESUME_WT=
+RESUME_PRIOR_TARGET=
+if [ "$RESUME" -eq 1 ]; then
+  # --resume adoption. Same principle as --relaunch below - every identity axis
+  # comes from the task's own validated durable record - but resume does NOT
+  # adopt the endpoint that record names. It expects that endpoint to be gone
+  # (quarantine stopped the VM) and creates a new one, so the recorded target is
+  # kept only to check that the old window is in fact absent.
+  RESUME_META=$REUSE_META
+  fm_backend_validate_task_endpoint "$RESUME_META" "$ID" || exit 1
+  BACKEND=$FM_BACKEND_VALIDATED_BACKEND
+  RESUME_PRIOR_TARGET=$FM_BACKEND_VALIDATED_TARGET
+  # The spec scopes resume to the effort's tmux window, and the window-presence
+  # refusal below is only as good as the backend's ability to answer "does this
+  # window exist?" - the same reason --relaunch admits only backends with a
+  # recovery-grade classifier. Rather than widen that guarantee to four more
+  # surfaces on a mode that has no requirement for them, refuse here.
+  [ "$BACKEND" = tmux ] || {
+    echo "error: task $ID runs on backend '$BACKEND'; --resume is implemented for tmux only, because it must positively establish that the effort's window is gone before creating another one" >&2
+    exit 1
+  }
+  fm_backend_validate_spawn "$BACKEND" || exit 1
+  fm_backend_source "$BACKEND" || exit 1
+  KIND=$(fm_meta_get "$RESUME_META" kind)
+  [ -n "$KIND" ] || KIND=ship
+  # Only a ship task is ever admitted, so only a ship task can hold the ledger
+  # entry resume binds against. A record that says otherwise contradicts the
+  # entry that named its worktree.
+  [ "$KIND" = ship ] || {
+    echo "error: task $ID is recorded as kind=$KIND, but $RESUME_KEY's admission entry can only belong to a ship task; refusing rather than resuming a contradicted record" >&2
+    exit 1
+  }
+  MODE=$(fm_meta_get "$RESUME_META" mode)
+  YOLO=$(fm_meta_get "$RESUME_META" yolo)
+  # Already known to resolve to the ledger's worktree - that match is what
+  # selected this record - so this read cannot disagree with it.
+  RESUME_WT=$(fm_meta_get "$RESUME_META" worktree)
+  PROJ=$(fm_meta_get "$RESUME_META" project)
+  [ -n "$PROJ" ] || {
+    echo "error: task $ID has no recorded project; refusing to resume" >&2
+    exit 1
+  }
+  REUSE_PRIOR_HARNESS=$(fm_meta_get "$RESUME_META" harness)
+  # Same rule as a relaunch: with no explicit --harness, reuse the one already
+  # recorded rather than falling through to whatever the crew default now says.
+  ARG3=${HARNESS_ARG:-$REUSE_PRIOR_HARNESS}
+  [ -n "$ARG3" ] || {
+    echo "error: task $ID has no recorded harness; pass --harness to resume it" >&2
+    exit 1
+  }
+elif [ "$RELAUNCH" -eq 1 ]; then
   [ "${#POS[@]}" -eq 1 ] || {
     echo "error: --relaunch takes the task id only; its project or home comes from the task's own record" >&2
     exit 1
   }
-  RELAUNCH_META="$STATE/$ID.meta"
+  RELAUNCH_META=$REUSE_META
   [ -f "$RELAUNCH_META" ] || {
     echo "error: --relaunch needs an existing task record; no $RELAUNCH_META" >&2
     exit 1
@@ -1112,7 +1357,7 @@ if [ "$RELAUNCH" -eq 1 ]; then
     echo "error: task $ID's endpoint reads '$RELAUNCH_STATE'; a relaunch requires a positively agent-free endpoint (stop the agent first with bin/fm-control.sh $ID exit)" >&2
     exit 1
   }
-  RELAUNCH_PRIOR_HARNESS=$(fm_meta_get "$RELAUNCH_META" harness)
+  REUSE_PRIOR_HARNESS=$(fm_meta_get "$RELAUNCH_META" harness)
   KIND=$(fm_meta_get "$RELAUNCH_META" kind)
   [ -n "$KIND" ] || KIND=ship
   MODE=$(fm_meta_get "$RELAUNCH_META" mode)
@@ -1144,7 +1389,7 @@ if [ "$RELAUNCH" -eq 1 ]; then
   # crew or secondmate default currently says. Choosing a different harness is
   # the caller's explicit decision, made with --harness (bin/fm-control.sh
   # resolves that decision, including a secondmate's durable pin).
-  ARG3=${HARNESS_ARG:-$RELAUNCH_PRIOR_HARNESS}
+  ARG3=${HARNESS_ARG:-$REUSE_PRIOR_HARNESS}
   [ -n "$ARG3" ] || {
     echo "error: task $ID has no recorded harness; pass --harness to relaunch it" >&2
     exit 1
@@ -1712,7 +1957,10 @@ if [ "$KIND" = secondmate ]; then
   fi
 else
   PROJ_ABS="$(cd "$(resolve_project_dir_arg "$PROJ")" && pwd)"
-  WT=""
+  # A fresh spawn leaves WT empty for `treehouse get` to fill from the pool. A
+  # resume already has one - the worktree its effort's work lives in, still
+  # leased - so it adopts that instead of asking the pool for another.
+  WT="$RESUME_WT"
   BRIEF="$DATA/$ID/brief.md"
 fi
 [ -f "$BRIEF" ] || { echo "error: no brief at $BRIEF" >&2; exit 1; }
@@ -1765,15 +2013,6 @@ BRIEF_REAL="$BRIEF_DIR_REAL/$(basename "$BRIEF")"
 # once here so every downstream comparison uses the same physical form
 # (docs/herdr-backend.md "Known gaps").
 PROJ_ABS_REAL=$(cd "$PROJ_ABS" 2>/dev/null && pwd -P) || PROJ_ABS_REAL="$PROJ_ABS"
-
-real_path_or_raw() {  # <path>
-  local path=$1 real
-  if real=$(cd "$path" 2>/dev/null && pwd -P); then
-    printf '%s\n' "$real"
-  else
-    printf '%s\n' "$path"
-  fi
-}
 
 # Session-provider container-ensure + task creation. tmux stays exactly as P1
 # left it (same session-name / new-window sequence, see bin/backends/tmux.sh);
@@ -1932,7 +2171,7 @@ herdr_projection_existing_meta_allows_flat() {  # <meta>
 # ledger entry is a claim on an effort, and dropping it on a spawn that may have
 # already made a branch or taken a lease is the fail-open direction. The entry
 # stays visible for `fm-admit.sh release`, which is the founder's runbook step.
-if [ "$ADMIT_MODE" = on ] && [ "$RELAUNCH" -eq 0 ] && [ "$KIND" = ship ]; then
+if [ "$ADMIT_MODE" = on ] && [ "$REUSE_TASK" -eq 0 ] && [ "$KIND" = ship ]; then
   [ -d "$ADMIT_WORKTREE" ] || {
     echo "error: --worktree '$ADMIT_WORKTREE' is not an existing directory; a pooled worktree exists before it is leased, so this is a typo rather than a race" >&2
     exit 1
@@ -1946,6 +2185,46 @@ if [ "$ADMIT_MODE" = on ] && [ "$RELAUNCH" -eq 0 ] && [ "$KIND" = ship ]; then
     --branch "$ADMIT_BRANCH" --worktree "$ADMIT_WORKTREE" || admit_rc=$?
   [ "$admit_rc" -eq 0 ] || exit "$admit_rc"
   ADMIT_WORKTREE_REAL=$(real_path_or_raw "$ADMIT_WORKTREE")
+fi
+
+# --resume's own seam, the exact counterpart of the admission call above: same
+# position, same property. Everything above it is validation that creates
+# nothing, so this is the last point at which a refusal still leaves no
+# endpoint, no window, and no ledger change. It runs under the admission lock
+# resume took at its binding check and still holds, which is what makes two
+# concurrent resumes of one effort produce exactly one worker rather than two.
+if [ "$RESUME" -eq 1 ]; then
+  # The recorded target, not the session this process would ensure: the effort's
+  # window is the one its own record names, and a container_ensure here would
+  # create a session as a side effect of asking a question.
+  resume_prior_ses=${RESUME_PRIOR_TARGET%%:*}
+  resume_prior_win=${RESUME_PRIOR_TARGET#*:}
+  resume_win_rc=0
+  fm_backend_tmux_window_exists "$resume_prior_ses" "$resume_prior_win" || resume_win_rc=$?
+  case "$resume_win_rc" in
+    0)
+      echo "error: task $ID's window '$RESUME_PRIOR_TARGET' still exists; --resume starts a replacement worker and will not run one alongside a live window (close it, or use --relaunch to adopt it)" >&2
+      exit 1
+      ;;
+    1) ;;
+    *)
+      echo "error: could not establish whether task $ID's window '$RESUME_PRIOR_TARGET' still exists; refusing rather than resuming on an unanswered question" >&2
+      exit 1
+      ;;
+  esac
+  # An absent window is grounds to proceed only as far as the harder question. A
+  # worker can outlive the window it was started in, so window absence is never
+  # proof of worker absence - it only earns the right to run teardown step 1's
+  # confirmed-dead check over the same two roots teardown scans. A failed scan is
+  # a refusal, not an all-clear; that is the whole reason it is a library.
+  fm_proc_pids_under_roots "$WT" "$TASK_TMP" || {
+    echo "error: could not establish whether a prior worker for task $ID survives (the scan of '${FM_PROC_FAILED_DIR:-?}' failed); refusing rather than starting a second worker on an unanswered question" >&2
+    exit 1
+  }
+  [ -z "$FM_PROC_PIDS" ] || {
+    echo "error: processes are still working under task $ID's worktree or temp root (pids: $(printf '%s' "$FM_PROC_PIDS" | tr '\n' ' ')); --resume requires the prior worker to be confirmed dead first" >&2
+    exit 1
+  }
 fi
 
 W="fm-$ID"
@@ -2192,6 +2471,16 @@ EOF
     ;;
 esac
 fi
+# The end of --resume's critical section, and the reason it is drawn here rather
+# than anywhere earlier: the effort's window now exists, so a second resume that
+# was blocked on this lock will find it and refuse, instead of racing past an
+# absence check that was true when it started. Held from the binding check
+# through worker creation, exactly that far, and no further - everything below
+# is worktree entry and harness launch, which the per-task-id spawn lock already
+# serializes and which a second resume can no longer reach.
+# spawn_abort_cleanup releases it too; this is the success path's release, and
+# fm_admit_lock_release is idempotent so the two cannot double-release.
+[ "$RESUME" -eq 0 ] || fm_admit_lock_release
 if [ "$KIND" = secondmate ]; then
   FM_INHERITABLE_CONFIG=trace-context \
     propagate_inheritable_config "$CONFIG" "$PROJ_ABS/config" \
@@ -2297,7 +2586,35 @@ kimi_spawn_fail() {  # <detail>
   echo "error: $1; inspect window $T" >&2
 }
 
-if [ "$RELAUNCH" -eq 1 ]; then
+if [ "$RESUME" -eq 1 ]; then
+  # No worktree is acquired here either, but for a different reason than the
+  # relaunch below: resume created a FRESH window, which starts in the project
+  # like any fresh spawn, over a worktree that has stayed leased since before
+  # quarantine. So the pane is walked into that worktree explicitly. `treehouse
+  # get` is exactly what must not run - it would take a second lease, and taking
+  # no new lease is half of what resume means.
+  #
+  # Unlike the treehouse poll further down, this waits for one KNOWN path rather
+  # than for "anything that is not the project", so the transient stale
+  # pane_current_path a brand-new tmux window can report needs no two-read
+  # confirmation: a stale path simply is not this worktree, and the loop keeps
+  # waiting. The budget is wider than the relaunch poll's because that one talks
+  # to a shell that has been running for a while, and this one to a shell that
+  # was created seconds ago.
+  spawn_send_text_line "$WT_TARGET" "cd $(shell_quote "$WT")"
+  resume_wt_real=$(real_path_or_raw "$WT")
+  resume_seen=
+  for _ in $(seq 1 30); do
+    resume_seen=$(spawn_current_path "$WT_TARGET" || true)
+    [ -z "$resume_seen" ] || [ "$(real_path_or_raw "$resume_seen")" != "$resume_wt_real" ] || break
+    sleep 0.5
+  done
+  if [ -z "$resume_seen" ] || [ "$(real_path_or_raw "$resume_seen")" != "$resume_wt_real" ]; then
+    echo "error: task $ID's new window is in '${resume_seen:-unknown}', not the admitted worktree '$WT' it was resumed for; refusing to start an agent outside the copy holding its work; inspect window $T" >&2
+    exit 1
+  fi
+  validate_spawn_worktree "resume" "$T"
+elif [ "$RELAUNCH" -eq 1 ]; then
   # No worktree is acquired: the recorded one is reused as-is. What must be
   # proven instead is that the adopted endpoint's shell is actually sitting in
   # that worktree, so the replacement agent starts where the work is rather
@@ -2378,7 +2695,7 @@ if [ -n "$ADMIT_WORKTREE_REAL" ]; then
     exit 1
   }
 fi
-if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ]; then
+if [ "$REUSE_TASK" -eq 0 ] && [ "$KIND" != secondmate ]; then
   freshen_spawn_worktree_base "$WT" || exit 1
 fi
 
@@ -2387,7 +2704,8 @@ fi
 # Nested (not a bare /tmp/fm-<id>/gotmp) so other per-task temp can live alongside
 # later, and teardown cleans one deterministic path. GOTMPDIR (not TMPDIR) is the
 # targeted knob: TMPDIR is too broad (affects every program's temp, not just Go's).
-TASK_TMP="/tmp/fm-$ID"
+# TASK_TMP itself is resolved with the task id far above; only the directory is
+# created here, where the spawn is past every refusal that must leave no trace.
 mkdir -p "$TASK_TMP/gotmp"
 
 # Per-harness turn-end hook where enabled: a file that touches
@@ -2404,14 +2722,14 @@ exclude_path() {
   mkdir -p "$(dirname "$EXCL")"
   grep -qxF "$rel" "$EXCL" 2>/dev/null || echo "$rel" >> "$EXCL"
 }
-if [ "$RELAUNCH" -eq 1 ]; then
+if [ "$REUSE_TASK" -eq 1 ]; then
   # Retire the previous incarnation's per-task harness wiring before arming the
   # new one. Without this, a harness switch would leave the old adapter's hook
   # files and turn-end token registry entries behind, and even a same-harness
   # relaunch would orphan the retired busy generation's token
   # (bin/fm-control-lib.sh owns where those artifacts live).
-  clear_relaunch_harness_wiring "$RELAUNCH_PRIOR_HARNESS" "$WT" "$STATE_REAL" "$ID" || {
-    echo "error: could not retire $RELAUNCH_PRIOR_HARNESS wiring for task $ID; refusing to arm the replacement" >&2
+  clear_relaunch_harness_wiring "$REUSE_PRIOR_HARNESS" "$WT" "$STATE_REAL" "$ID" || {
+    echo "error: could not retire $REUSE_PRIOR_HARNESS wiring for task $ID; refusing to arm the replacement" >&2
     exit 1
   }
   RELAUNCH_REPLACEMENT_PENDING=1
@@ -2442,7 +2760,7 @@ if [ "$KIND" != secondmate ]; then
         echo "error: failed to arm the busy-state contract for $ID" >&2
         exit 1
       }
-      [ "$RELAUNCH" -ne 1 ] || RELAUNCH_REPLACEMENT_BUSY_GEN=$BUSY_GEN
+      [ "$REUSE_TASK" -ne 1 ] || RELAUNCH_REPLACEMENT_BUSY_GEN=$BUSY_GEN
       ;;
     kimi*)
       # Standalone Kimi stays unknown until fm_busy_kimi_verified opens on a
@@ -2716,21 +3034,21 @@ fi
 META_WINDOW=$T
 [ "$BACKEND" = orca ] && META_WINDOW=$W
 SPAWN_META_PATH="$STATE/$ID.meta"
-if [ "$RELAUNCH" -eq 1 ]; then
+if [ "$REUSE_TASK" -eq 1 ]; then
   SPAWN_META_LOCK=$(fm_meta_lock_path "$STATE/$ID.meta") || exit 1
   fm_lock_acquire_wait "$SPAWN_META_LOCK"
   SPAWN_META_LOCK_HELD=1
-  SPAWN_META_TMP="$STATE/.$ID.meta.relaunch.${BASHPID:-$$}"
+  SPAWN_META_TMP="$STATE/.$ID.meta.reuse.${BASHPID:-$$}"
   SPAWN_META_PATH=$SPAWN_META_TMP
 fi
-preserve_relaunch_meta() {
+preserve_reused_meta() {
   awk -F= '
     BEGIN {
       split("window endpoint_task_id worktree project harness kind mode yolo tasktmp model effort busy_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
       for (i in keys) owned[keys[i]] = 1
     }
     !($1 in owned)
-  ' "$RELAUNCH_META"
+  ' "$REUSE_META"
 }
 {
   echo "window=$META_WINDOW"
@@ -2773,14 +3091,14 @@ preserve_relaunch_meta() {
     echo "home=$PROJ_ABS"
     echo "projects=$SECONDMATE_PROJECTS"
   fi
-  if [ "$RELAUNCH" -eq 1 ]; then
-    preserve_relaunch_meta
+  if [ "$REUSE_TASK" -eq 1 ]; then
+    preserve_reused_meta
   fi
   if [ "$SPAWN_CONTROL_PARENT" = 1 ] && [ -n "${FM_CONTROL_RELAUNCH_TX:-}" ]; then
     echo "control_relaunch_tx=$FM_CONTROL_RELAUNCH_TX"
   fi
 } > "$SPAWN_META_PATH"
-if [ "$RELAUNCH" -eq 1 ]; then
+if [ "$REUSE_TASK" -eq 1 ]; then
   SPAWN_META_PUBLISH_STARTED=1
   mv -f "$SPAWN_META_TMP" "$STATE/$ID.meta"
   RELAUNCH_REPLACEMENT_PENDING=0

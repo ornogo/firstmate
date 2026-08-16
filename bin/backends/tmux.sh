@@ -69,6 +69,37 @@ fm_backend_tmux_container_ensure() {
   fi
 }
 
+# fm_backend_tmux_window_exists: does <window-name> exist in <session>?
+# A probe, not an assertion: fm-spawn.sh's --resume mode must positively
+# establish that a quarantined effort's window is GONE before it creates
+# another one, and "the listing failed" is not the same answer as "the window
+# is not there". So this is tri-state and fails CLOSED - a caller that cannot
+# tell the two apart must refuse:
+#
+#   0 - the window exists           -> resume refuses
+#   1 - positively absent           -> resume may proceed
+#   2 - tmux could not answer       -> resume refuses
+#
+# A missing session (including no tmux server at all) is a genuine 1: there is
+# no window anywhere to be found. A missing tmux binary is a 2, because then
+# nothing was probed. Deliberately does NOT call fm_backend_tmux_container_ensure
+# first - that would CREATE the session as a side effect of asking a question,
+# and a refusal has to leave no spawn-side artifacts behind.
+#
+# Targets are spelled exactly as fm_backend_tmux_create_task spells them (bare
+# "$ses", no "=" prefix), so the probe and the creation cannot disagree about
+# which session they mean.
+fm_backend_tmux_window_exists() {  # <session> <window-name>
+  local ses=$1 wname=$2 names
+  command -v tmux >/dev/null 2>&1 || return 2
+  tmux has-session -t "$ses" 2>/dev/null || return 1
+  names=$(tmux list-windows -t "$ses" -F '#{window_name}' 2>/dev/null) || return 2
+  if printf '%s\n' "$names" | grep -qx "$wname"; then
+    return 0
+  fi
+  return 1
+}
+
 # fm_backend_tmux_create_task: create the task's window in <proj-abs>,
 # refusing an existing <window-name> in <session>. Mirrors fm-spawn.sh's
 # duplicate-check-then-new-window sequence, including the exact error text
