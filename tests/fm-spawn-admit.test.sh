@@ -313,7 +313,20 @@ case "${1:-}" in
   # that names the window, a listing that does not, and a tmux that cannot say.
   # Defaulted so a case that sets none of them gets "the session is there and it
   # holds no windows", which is what every pre-resume case already assumed.
-  has-session) exit "${FM_FAKE_TMUX_HAS_SESSION:-0}" ;;
+  has-session)
+    # A failing has-session says WHY on stderr, and the probe reads it: only the
+    # messages that mean absence may be read as absence. Defaulted to one of
+    # those so a case that only sets the exit code still means "session gone".
+    if [ "${FM_FAKE_TMUX_HAS_SESSION:-0}" -ne 0 ]; then
+      # Spelled out rather than defaulted inline: the message tmux actually
+      # prints contains an apostrophe, and a `${x:-...}` default word is quote-
+      # processed even inside double quotes.
+      err=${FM_FAKE_TMUX_HAS_SESSION_ERR:-}
+      [ -n "$err" ] || err="can't find session: fm"
+      printf '%s\n' "$err" >&2
+    fi
+    exit "${FM_FAKE_TMUX_HAS_SESSION:-0}"
+    ;;
   list-windows)
     [ -z "${FM_FAKE_TMUX_WINDOWS:-}" ] || printf '%s\n' "$FM_FAKE_TMUX_WINDOWS"
     exit "${FM_FAKE_TMUX_LIST_RC:-0}"
@@ -525,6 +538,7 @@ make_resume_case() {  # <name> <id> <issue-number>
   RESUME_PANE_PATH=$SEAM_WT
   FM_FAKE_TMUX_WINDOWS=
   FM_FAKE_TMUX_HAS_SESSION=0
+  FM_FAKE_TMUX_HAS_SESSION_ERR=
   FM_FAKE_TMUX_LIST_RC=0
   FM_FAKE_LSOF_CWD=
   FM_FAKE_LSOF_RC=0
@@ -554,6 +568,7 @@ run_resume_spawn() {  # <issue-key> [extra spawn args...]
     FM_FAKE_PANE_PATH="$RESUME_PANE_PATH" FM_FAKE_TMUX_LOG="$SEAM_LOG" \
     FM_FAKE_TMUX_WINDOWS="$FM_FAKE_TMUX_WINDOWS" \
     FM_FAKE_TMUX_HAS_SESSION="$FM_FAKE_TMUX_HAS_SESSION" \
+    FM_FAKE_TMUX_HAS_SESSION_ERR="$FM_FAKE_TMUX_HAS_SESSION_ERR" \
     FM_FAKE_TMUX_LIST_RC="$FM_FAKE_TMUX_LIST_RC" \
     FM_FAKE_LSOF_CWD="$FM_FAKE_LSOF_CWD" \
     FM_FAKE_LSOF_RC="$FM_FAKE_LSOF_RC" \
@@ -777,6 +792,25 @@ test_resume_refuses_when_the_window_probe_cannot_answer() {
   pass "--resume refuses an unanswerable window probe rather than reading it as an absent window"
 }
 
+# The other half of the same contract, and the easier half to get wrong:
+# `has-session` fails both when the session is genuinely gone and when tmux
+# cannot be asked at all, and only the first of those is an answer. A socket
+# this process may not read says nothing about whether a worker is still in that
+# window, so it is refused rather than collapsed into absence.
+test_resume_refuses_when_the_session_probe_cannot_answer() {
+  local out status
+  make_resume_case resume-blindsession resume-blindsession-z44 9223
+  FM_FAKE_TMUX_HAS_SESSION=1
+  FM_FAKE_TMUX_HAS_SESSION_ERR="error connecting to /tmp/tmux-1000/default (Permission denied)"
+  out=$(run_resume_spawn ORN-9223)
+  status=$?
+  expect_code 1 "$status" "--resume should refuse when tmux cannot say whether the session is there"
+  assert_contains "$out" "could not establish whether" \
+    "refusal did not name the unanswered question"
+  assert_resume_created_nothing "a resume whose session probe could not answer"
+  pass "--resume refuses an unreachable tmux server rather than reading it as an absent session"
+}
+
 # A worker can outlive the window it was started in, so an absent window only
 # earns the right to ask the harder question. Note the session is missing here
 # too: that is a genuine absence (there is no window anywhere to find), so the
@@ -829,7 +863,12 @@ test_resume_refuses_a_pane_that_never_reaches_the_admitted_worktree() {
   expect_code 1 "$status" "a pane outside the admitted worktree should be refused"
   assert_contains "$out" "not the admitted worktree" \
     "refusal did not name the worktree the resume was for"
-  pass "--resume refuses to start an agent in a pane that never reached the admitted worktree"
+  # This refusal is the one that happens after the window exists, so it is also
+  # the one that has something to take back. Left behind, that window would
+  # answer the next resume's presence probe and refuse every retry forever.
+  grep -q 'kill-window' "$SEAM_LOG" \
+    || fail "a refused resume left its replacement window behind; the next resume would find it and refuse"
+  pass "--resume refuses to start an agent in a pane that never reached the admitted worktree, and takes its window back"
 }
 
 # The admitted path. What makes it a resume rather than a spawn is entirely in
@@ -880,6 +919,7 @@ test_resume_refuses_a_worktree_that_is_not_on_the_admitted_branch
 test_resume_refuses_zero_or_several_tasks_for_the_admitted_worktree
 test_resume_refuses_while_the_recorded_window_still_exists
 test_resume_refuses_when_the_window_probe_cannot_answer
+test_resume_refuses_when_the_session_probe_cannot_answer
 test_resume_refuses_when_a_prior_worker_survives_the_window
 test_resume_refuses_when_the_confirmed_dead_scan_cannot_answer
 test_resume_refuses_a_pane_that_never_reaches_the_admitted_worktree

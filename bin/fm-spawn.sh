@@ -854,6 +854,13 @@ RELAUNCH_REPLACEMENT_STATE=
 RELAUNCH_REPLACEMENT_WT=
 CONFIG_INHERIT_LOCK=
 CONFIG_INHERIT_LOCK_HELD=0
+# The endpoint --resume creates, held for teardown until the resume is published.
+# A relaunch adopts its endpoint and must never tear one down; a fresh spawn's
+# endpoint is the task itself. Only resume both creates one and promises that a
+# refusal leaves nothing behind, so only resume arms this.
+RESUME_ENDPOINT_ABORT_CLEANUP=0
+RESUME_ENDPOINT_BACKEND=
+RESUME_ENDPOINT_TARGET=
 
 parse_orca_worktree_result() {
   local raw=$1 rest
@@ -942,6 +949,17 @@ spawn_abort_cleanup() {
           } > "$STATE/$ID.meta" 2>/dev/null || true
         fi
       fi
+    fi
+  fi
+  if [ "$RESUME_ENDPOINT_ABORT_CLEANUP" = 1 ]; then
+    RESUME_ENDPOINT_ABORT_CLEANUP=0
+    if [ -n "$RESUME_ENDPOINT_TARGET" ]; then
+      # Runs before the lock releases below, so a resume waiting on the lock
+      # never sees the half-torn-down window this one is abandoning. Removing it
+      # is also what keeps the refusal retryable: left behind, it would answer
+      # the next resume's presence probe and refuse it forever.
+      fm_backend_kill "$RESUME_ENDPOINT_BACKEND" "$RESUME_ENDPOINT_TARGET" 2>/dev/null \
+        || echo "warning: could not remove the replacement window after a refused resume of $ID; close $RESUME_ENDPOINT_TARGET before resuming again" >&2
     fi
   fi
   if [ "$SPAWN_TASK_LOCK_HELD" = 1 ]; then
@@ -2474,6 +2492,16 @@ EOF
     ;;
 esac
 fi
+if [ "$RESUME" -eq 1 ]; then
+  # Armed here, while the admission lock is still held, because everything below
+  # this point can still refuse - worktree entry most of all - and every one of
+  # those refusals promised to leave no window behind. Disarmed only once the
+  # task record is published, which is the first moment the window is the
+  # effort's rather than this process's to clean up.
+  RESUME_ENDPOINT_ABORT_CLEANUP=1
+  RESUME_ENDPOINT_BACKEND=$BACKEND
+  RESUME_ENDPOINT_TARGET=$T
+fi
 # The end of --resume's critical section, and the reason it is drawn here rather
 # than anywhere earlier: the effort's window now exists, so a second resume that
 # was blocked on this lock will find it and refuse, instead of racing past an
@@ -3105,6 +3133,9 @@ if [ "$REUSE_TASK" -eq 1 ]; then
   SPAWN_META_PUBLISH_STARTED=1
   mv -f "$SPAWN_META_TMP" "$STATE/$ID.meta"
   RELAUNCH_REPLACEMENT_PENDING=0
+  # The record now names this window, so it belongs to the effort and an abort
+  # below must not take it down.
+  RESUME_ENDPOINT_ABORT_CLEANUP=0
   SPAWN_META_PUBLISH_STARTED=0
   SPAWN_META_TMP=
   fm_lock_release "$SPAWN_META_LOCK"

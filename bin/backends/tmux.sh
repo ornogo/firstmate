@@ -90,9 +90,21 @@ fm_backend_tmux_container_ensure() {
 # "$ses", no "=" prefix), so the probe and the creation cannot disagree about
 # which session they mean.
 fm_backend_tmux_window_exists() {  # <session> <window-name>
-  local ses=$1 wname=$2 names
+  local ses=$1 wname=$2 names err
   command -v tmux >/dev/null 2>&1 || return 2
-  tmux has-session -t "$ses" 2>/dev/null || return 1
+  # has-session fails for two unrelated reasons, and only one of them is an
+  # answer. "no server running" and "can't find session" positively establish
+  # that no window is there; an unreadable socket, a protocol mismatch or a
+  # server that cannot be inspected establish nothing. Collapsing the second
+  # group into absence is exactly the fail-open direction that starts a second
+  # worker, so only the messages that mean absence return 1. tmux is not
+  # localized, so matching its text is stable.
+  if ! err=$(tmux has-session -t "$ses" 2>&1); then
+    case "$err" in
+      *"no server running"*|*"can't find session"*|*"No such file or directory"*) return 1 ;;
+      *) return 2 ;;
+    esac
+  fi
   names=$(tmux list-windows -t "$ses" -F '#{window_name}' 2>/dev/null) || return 2
   # -F, matching fm_backend_tmux_agent_state below: a task id may contain `.`
   # (fm_backend_validate_task_endpoint allows it), and this answer decides
