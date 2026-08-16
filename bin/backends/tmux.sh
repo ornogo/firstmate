@@ -96,8 +96,10 @@ fm_backend_tmux_window_exists() {  # <session> <window-name>
   names=$(tmux list-windows -t "$ses" -F '#{window_name}' 2>/dev/null) || return 2
   # -F, matching fm_backend_tmux_agent_state below: a task id may contain `.`
   # (fm_backend_validate_task_endpoint allows it), and this answer decides
-  # whether a second worker starts, so the name must match literally.
-  if printf '%s\n' "$names" | grep -Fqx "$wname"; then
+  # whether a second worker starts, so the name must match literally. `--` for
+  # the same reason: the name is data, and a leading `-` must reach grep as a
+  # pattern rather than as an option.
+  if printf '%s\n' "$names" | grep -Fqx -- "$wname"; then
     return 0
   fi
   return 1
