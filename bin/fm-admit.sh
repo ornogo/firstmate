@@ -215,8 +215,18 @@ normalize_worktree() {
     /*) ;;
     *) die "admit needs an absolute --worktree path, got: $path" ;;
   esac
+  # A binding conflict is decided by string equality, so every alternate
+  # spelling of one path has to be ruled out before it reaches the ledger: two
+  # admissions spelling the same worktree differently would each read the
+  # other's binding as some other worktree's and both be let through. Trailing
+  # slashes are stripped, since that spelling is unambiguous and callers produce
+  # it routinely. The rest are refused rather than rewritten - a caller emitting
+  # an empty or dot segment is assembling paths in a way the founder should see,
+  # and quietly repairing it here would hide that from them.
   case "$path" in
+    *//*) die "admit needs a --worktree path with no empty segment, got: $path" ;;
     */../*|*/..) die "admit needs a --worktree path with no '..' segment, got: $path" ;;
+    */./*|*/.) die "admit needs a --worktree path with no '.' segment, got: $path" ;;
   esac
   while [ "${#path}" -gt 1 ] && [ "${path%/}" != "$path" ]; do path=${path%/}; done
   WORKTREE_PATH=$path

@@ -100,6 +100,21 @@ admit_run admit --branch feat/orn-1-x --worktree /pool/../etc
 expect_code 2 "$RC" "traversal in worktree"
 assert_contains "$OUT" "no '..' segment" "a '..' segment must be rejected rather than resolved"
 
+# Binding conflicts are string equality, so a second spelling of one path is a
+# way past the guard, not a cosmetic complaint: /pool//wt and /pool/./wt each
+# name the worktree /pool/wt while comparing unequal to it.
+admit_run admit --branch feat/orn-1-x --worktree /pool//wt-1
+expect_code 2 "$RC" "empty segment in worktree"
+assert_contains "$OUT" "no empty segment" "an empty segment must be rejected, not compared as a distinct path"
+
+admit_run admit --branch feat/orn-1-x --worktree /pool/./wt-1
+expect_code 2 "$RC" "dot segment in worktree"
+assert_contains "$OUT" "no '.' segment" "a '.' segment must be rejected, not compared as a distinct path"
+
+admit_run admit --branch feat/orn-1-x --worktree /pool/wt-1/.
+expect_code 2 "$RC" "trailing dot segment in worktree"
+assert_contains "$OUT" "no '.' segment" "a trailing '.' segment must be rejected too"
+
 admit_run release
 expect_code 2 "$RC" "release with no key"
 admit_run release ORN-1 ORN-2
@@ -218,7 +233,17 @@ seed_ledger '{}'
 admit_run admit --branch feat/orn-1-x --worktree /pool/wt-1/
 expect_code 0 "$RC" "trailing-slash worktree"
 [ "$(entry_field ORN-1 worktree)" = "/pool/wt-1" ] || fail "a trailing slash must be normalized away"
-pass "a trailing slash is stripped so /pool/wt and /pool/wt/ cannot both be admitted"
+
+# The dot-segment refusals above are about segments that are exactly . or ..,
+# not about dots. A name that merely starts with one is an ordinary directory
+# and has to stay admissible, or the refusal has quietly become a ban on
+# hidden directories - which is where a worktree pool could plausibly live.
+new_home
+seed_ledger '{}'
+admit_run admit --branch feat/orn-2-y --worktree /pool/.hidden/..wt-2
+expect_code 0 "$RC" "dot-prefixed worktree names"
+[ "$(entry_field ORN-2 worktree)" = "/pool/.hidden/..wt-2" ] || fail "a dot-prefixed name must be admitted unchanged"
+pass "a trailing slash is stripped so /pool/wt and /pool/wt/ cannot both be admitted, and dot-prefixed names still admit"
 
 # --- missing-key ------------------------------------------------------------
 
