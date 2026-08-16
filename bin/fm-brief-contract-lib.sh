@@ -83,9 +83,7 @@ fm_brief_header_carries_contract() {  # <brief path> -> 0 when the header region
     if [ "$line" = "$FM_DELIVERY_CONTRACT_SENTINEL" ]; then
       return 0
     fi
-  done <<EOF
-$header
-EOF
+  done <<< "$header"
   return 1
 }
 
@@ -100,8 +98,6 @@ fm_brief_header_delivery_mode() {  # <brief path> -> prints the mode recorded in
         return 0
         ;;
     esac
-  done <<EOF
-$header
-EOF
+  done <<< "$header"
   return 1
 }

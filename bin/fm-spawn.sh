@@ -2026,7 +2026,7 @@ if [ "$KIND" = ship ]; then
   PROJ_NAME=$(basename "$PROJ_ABS")
   BRIEF_MODE=$(fm_brief_header_delivery_mode "$BRIEF") || BRIEF_MODE=
   if [ -z "$BRIEF_MODE" ]; then
-    echo "error: $BRIEF records no delivery contract line in its header region (everything above the first '$FM_BRIEF_TASK_BODY_DELIMITER' line), so there is nothing to check this spawn's --mode $MODE against; a mode line in the task body does not count, because that is the part of the brief the task description supplies; re-scaffold the brief with bin/fm-brief.sh so its instructions and this task's recorded delivery agree" >&2
+    echo "error: $BRIEF records no delivery contract line in its header region (everything above the first '$FM_BRIEF_TASK_BODY_DELIMITER' line), so there is nothing to check this spawn's --mode $MODE against; a mode line in the task body does not count, because that is the part of the brief the task description supplies. A brief scaffolded before that line moved into the header still carries it further down, next to the definition of done: move that one line up into the header region, which keeps the task description intact. Re-scaffold with bin/fm-brief.sh only when there is no such line to move, because re-scaffolding replaces the task description with a fresh placeholder" >&2
     exit 1
   elif [ "$BRIEF_MODE" != "$MODE" ]; then
     echo "error: delivery mismatch for $ID: the brief says mode=$BRIEF_MODE but this spawn passed --mode $MODE; correct the flag or re-scaffold the brief so the worker's instructions and the task record agree" >&2
