@@ -46,7 +46,7 @@ make_case() {
 
   mkdir -p "$home/data/$id" "$home/projects" "$home/state" "$home/config"
   printf 'codex\n' > "$home/config/crew-harness"
-  printf 'brief for %s\n' "$id" > "$home/data/$id/brief.md"
+  fm_test_write_brief "$home/data/$id/brief.md" no-mistakes
   touch "$home/state/.last-watcher-beat"
 
   git init --quiet -b "$default" "$project"
@@ -105,8 +105,7 @@ test_stale_pool_base_refreshes_before_branching() {
   fi
 
   id='pool-current-base-repeat-r1'
-  mkdir -p "$HOME_DIR/data/$id"
-  printf 'brief for %s\n' "$id" > "$HOME_DIR/data/$id/brief.md"
+  fm_test_write_brief "$HOME_DIR/data/$id/brief.md" no-mistakes
   out=$(run_spawn "$id" --mode no-mistakes --yolo off)
   status=$?
   expect_code 0 "$status" "repeating the base refresh should be idempotent"
@@ -167,6 +166,10 @@ test_direct_pr_and_scout_refresh_before_launch() {
     if [ "$contract" = scout ]; then
       out=$(run_spawn "$id" --scout)
     else
+      # Rewritten rather than taken from make_case's default, because a ship brief's
+      # recorded mode has to agree with the spawn's --mode. Kept next to the flag it
+      # must match so the two cannot drift apart unnoticed.
+      fm_test_write_brief "$HOME_DIR/data/$id/brief.md" direct-PR
       out=$(run_spawn "$id" --mode direct-PR --yolo off)
     fi
     status=$?

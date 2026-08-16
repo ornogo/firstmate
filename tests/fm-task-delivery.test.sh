@@ -5,7 +5,8 @@
 # A ship task's delivery mode and yolo posture are firstmate's decision at intake,
 # so the tools refuse to guess: the spawn and a scout promotion require both flags,
 # validate them against a closed set, and the spawn additionally refuses to launch
-# when the brief it is about to hand the worker records a different mode. Scout
+# when the brief it is about to hand the worker records a different mode, or
+# records none at all and so states no contract to check against. Scout
 # spawns carry no delivery posture at all. The registry keeps only the captain's
 # standing posture, for the mechanical consumers and for one advisory notice.
 #
@@ -40,13 +41,11 @@ make_home() {  # <name> [<registry-line>...]
   printf '%s\n' "$home|$projects/proj|$fakebin"
 }
 
+# Delegates so the delivery-contract sentinel and the task-body delimiter come from
+# their one owner. Passing the mode straight through keeps the "no mode line at all"
+# case reachable, which is what the legacy-brief and scout cases below are about.
 write_brief() {  # <home> <id> [<recorded-mode>]
-  local home=$1 id=$2 mode=${3:-}
-  mkdir -p "$home/data/$id"
-  {
-    printf 'You are a crewmate.\n\n# Definition of done\n'
-    [ -z "$mode" ] || printf 'Delivery contract: mode=%s\n' "$mode"
-  } > "$home/data/$id/brief.md"
+  fm_test_write_brief "$1/data/$2/brief.md" "${3-}"
 }
 
 run_spawn() {  # <home> <fakebin> <spawn-args...>
@@ -138,11 +137,19 @@ EOF
   out=$(run_spawn "$home" "$fakebin" delivery-agree-b2 "$proj" claude --mode direct-PR --yolo off)
   assert_not_contains "$out" "delivery mismatch" "an agreeing mode was reported as a mismatch"
 
-  # A brief scaffolded before the contract line existed warns once and continues.
+  # A ship brief that records no mode leaves the spawn's --mode with nothing to
+  # agree with, so there is no contract to hand the worker and the spawn refuses.
+  # This used to warn and launch anyway; a worker started that way is following
+  # instructions nobody checked, which is the failure the refusal exists to stop.
+  # It is refused on its own terms rather than reported as a mismatch, because an
+  # absent mode and a disagreeing one need different fixes.
   write_brief "$home" delivery-legacy-b3
   out=$(run_spawn "$home" "$fakebin" delivery-legacy-b3 "$proj" claude --mode local-only --yolo off)
-  assert_contains "$out" "records no delivery contract line" "a legacy brief did not warn about its missing contract"
-  assert_not_contains "$out" "delivery mismatch" "a legacy brief was treated as a mismatch"
+  status=$?
+  [ "$status" -ne 0 ] || fail "a ship brief recording no mode should exit non-zero"
+  assert_contains "$out" "records no delivery contract line" "the refusal did not name the missing contract line"
+  assert_not_contains "$out" "delivery mismatch" "a brief with no recorded mode was reported as a mismatch"
+  assert_absent "$home/state/delivery-legacy-b3.meta" "a brief with no recorded mode wrote task metadata"
   pass "fm-spawn: the brief's recorded mode and the spawn's explicit mode must agree"
 }
 

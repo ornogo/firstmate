@@ -140,8 +140,7 @@ add_ship_task() {
   local dir=$1 id=$2 harness=${3:-claude}
   local home="$dir/home" proj="$dir/proj" wt="$dir/wt"
   fm_git_worktree "$proj" "$wt" "task-$id"
-  mkdir -p "$home/data/$id"
-  printf '# brief for %s\n\nDo the thing.\n' "$id" > "$home/data/$id/brief.md"
+  fm_test_write_brief "$home/data/$id/brief.md" no-mistakes
   {
     echo "window=fmses:fm-$id"
     echo "endpoint_task_id=$id"
@@ -379,13 +378,23 @@ test_disabled_relaunch_clears_prior_trace_context() {
 }
 
 test_relaunch_appends_the_progress_note_to_the_instructions() {
-  local dir out rc brief
+  local dir out rc brief before line
   dir=$(new_case note rl2)
   add_ship_task "$dir" rl2 claude
+  brief="$dir/home/data/rl2/brief.md"
+  # Snapshotted rather than matched against one literal lifted out of the fixture,
+  # so the assertion keeps meaning "every original line is still there" however the
+  # shared brief fixture is worded. The no-note case below already reads the brief
+  # this way; the literal was the odd one out.
+  before=$(cat "$brief")
   out=$(run_control "$dir" rl2 relaunch --note "reproduced the crash in parser.go"); rc=$?
   expect_code 0 "$rc" "relaunch should succeed"$'\n'"$out"
-  brief="$dir/home/data/rl2/brief.md"
-  assert_grep "Do the thing." "$brief" "the original instructions must survive"
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    assert_grep "$line" "$brief" "the original instructions must survive"
+  done <<EOF
+$before
+EOF
   assert_grep "## Progress note" "$brief" "the note should be a dated section in the instructions"
   assert_grep "reproduced the crash in parser.go" "$brief" "the note text should reach the replacement"
   assert_grep "reproduced the crash in parser.go" "$dir/home/state/rl2.control-relaunch.note" \

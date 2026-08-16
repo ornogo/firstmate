@@ -319,12 +319,13 @@ test_faster_paths_use_configured_authority_without_stacked_review() {
   pass "fm-brief.sh: faster paths use configured authority without stacked review"
 }
 
-# The spawn-time check landing in the following increment reads a brief only from
-# its first line down to the first task-body delimiter, and refuses unless that
-# region carries the sentinel as a whole line. This scaffold is the sole producer
-# of briefs that will pass it, so every task brief it writes has to place the
-# sentinel strictly above the delimiter: a sentinel that drifts below it, or a
-# delimiter that disappears, turns that check into a blanket refusal.
+# The spawn-time check in bin/fm-spawn.sh reads a brief only from its first line
+# down to the first task-body delimiter, and refuses unless that region carries
+# the sentinel as a whole line (the rule itself is covered by
+# tests/fm-spawn-brief-contract.test.sh). This scaffold is the sole producer of
+# briefs that pass it, so every task brief it writes has to place the sentinel
+# strictly above the delimiter: a sentinel that drifts below it, or a delimiter
+# that disappears, turns that check into a blanket refusal.
 # A secondmate charter has no task body and therefore no delimiter to bound a
 # header region, so the predicate is undefined for it and it carries no sentinel.
 test_delivery_contract_sentinel_rides_above_the_task_delimiter() {
