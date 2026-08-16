@@ -40,6 +40,19 @@
 # "Delivery contract: mode=<mode>" line. bin/fm-spawn.sh reads that line and refuses
 # to launch a ship task whose explicit --mode disagrees, so an adjusted brief and the
 # recorded task metadata cannot drift apart.
+# Every generated ship and scout brief also carries the literal
+# "DELIVERY-CONTRACT: worker-landed-lite v1" sentinel in its header region, above
+# the fixed task-body delimiter that opens {TASK}. bin/fm-brief-contract-lib.sh is
+# the one owner of both strings; the spawn-time refusal that reads them lands in
+# the following increment, so this scaffold is what makes a brief recognizable as
+# template-generated. A secondmate charter has no task body and therefore no
+# delimiter to bound a header region, so it carries no sentinel.
+# Ship briefs carry the worker-landed-lite delivery contract as brief text rather
+# than as a mode registration. A PR-delivering mode gets all four statements:
+# done means merged, record the PR with fm-pr-check.sh as soon as it exists, the
+# worker holds no merge authority, and delivery is a single ref. local-only opens
+# no PR and hands the merge to firstmate, so its variant carries the two
+# statements that bind it and states why the other two cannot.
 # Ship briefs begin with a worktree-isolation assertion before the branch step.
 # --mode is refused on scout and secondmate scaffolds: a scout's deliverable is a
 # report rather than a merge, and a charter is not a delivery contract.
@@ -71,6 +84,8 @@ case "${1:-}" in
   -h|--help) usage; exit 0 ;;
 esac
 
+# shellcheck source=bin/fm-brief-contract-lib.sh
+. "$SCRIPT_DIR/fm-brief-contract-lib.sh"
 # shellcheck source=bin/fm-marker-lib.sh
 . "$SCRIPT_DIR/fm-marker-lib.sh"
 # shellcheck source=bin/fm-classify-lib.sh
@@ -177,6 +192,24 @@ shell_quote() {
 }
 
 STATUS_FILE=$(shell_quote "$STATE/$ID.status")
+
+# fm-pr-check.sh resolves its state directory from the environment, and an
+# ordinary crewmate launch carries no FM_HOME: fm-spawn.sh injects one only for
+# a secondmate, and a backend that opens a fresh window need not pass firstmate's
+# own environment through. Where FM_HOME selects a home apart from the code root,
+# an unprefixed invocation would look for the task metadata under the code root,
+# fail, and trip the recording hard stop on every delivery. So render the
+# scaffold's already-resolved home and state into the command, for the same
+# reason $STATUS_FILE is handed over as an absolute path rather than a relative
+# one. Every interpolated path is quoted, the helper path included: the worker
+# is told to run this line verbatim, and recording is a hard gate, so a checkout
+# or home under a path with a space would otherwise block PR delivery outright.
+# The {url} placeholder is quoted for the same reason, even though the worker
+# rather than the scaffold fills it in: the helper validates the URL it is
+# handed and rejects a malformed one, which it can only do if the whole string
+# reaches it as one argument instead of being split or interpreted by the shell
+# on the way.
+PR_CHECK_CMD="FM_HOME=$(shell_quote "$FM_HOME") FM_STATE_OVERRIDE=$(shell_quote "$STATE") $(shell_quote "$FM_ROOT/bin/fm-pr-check.sh") $ID '{url}'"
 
 if [ "$KIND" = secondmate ]; then
 SECONDMATE_PROJECTS=""
@@ -301,8 +334,9 @@ fi
 if [ "$KIND" = scout ]; then
 cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
+$FM_DELIVERY_CONTRACT_SENTINEL
 
-# Task
+$FM_BRIEF_TASK_BODY_DELIMITER
 {TASK}
 
 $HERDR_SECTION
@@ -347,6 +381,28 @@ echo "scaffolded: $BRIEF (scout; replace {TASK})"
 exit 0
 fi
 
+# Worker-landed lite: the delivery contract rides in the brief rather than in a
+# mode registration, so these statements are brief text and add no --mode case
+# arm. All four bind a PR-delivering ship task. local-only is not a worker-landed
+# delivery - it opens no PR and hands the merge to firstmate - so it carries the
+# two statements that do bind it and names why the other two cannot.
+IFS= read -r -d '' DELIVERY_CONTRACT <<EOF || true
+# Delivery contract - worker-landed-lite v1
+1. **Done means merged.** An open PR is progress, not completion. A pushed branch, an open PR, and green CI are all mid-flight states; none of them ends this task. The only states that end it are: the PR merged, the PR closed without merging, or a blocker that genuinely needs a human. Your definition of done below may also have you append one earlier \`done:\` to hand control back to firstmate mid-task; where it does, it says so and says what happens next. That handoff is not this task ending, and nothing else you write may claim completion before one of the three states above.
+2. **Record the PR the moment it exists.** As soon as the PR is open, run \`$PR_CHECK_CMD\` exactly as written - the leading assignments point it at the records for this task - and confirm it exits 0. That writes the \`pr=\` association firstmate depends on; branch-based discovery does not work here, so nothing else records it. A failed run, or a \`pr=\` that never lands, is a HARD STOP: append \`blocked: fm-pr-check.sh did not record pr= for {url}\` and stop. Do not carry this delivery toward merge without that record.
+3. **You hold no merge authority.** Never invoke a firstmate merge helper (\`fm-pr-merge.sh\`, \`fm-merge-local.sh\`), never merge the PR, never enable auto-merge on it, and never force-push it. Merge authorization is server-side branch protection plus the merge queue, and nothing you hold can bypass either.
+4. **Single-ref delivery.** Push only your \`fm/$ID\` branch, and only to the delivery repo's \`origin\`. Open at most one PR, and only from that branch. No side refs, no additional remotes, no other repositories.
+EOF
+DELIVERY_CONTRACT=${DELIVERY_CONTRACT%$'\n'}
+
+IFS= read -r -d '' DELIVERY_CONTRACT_LOCAL_ONLY <<EOF || true
+# Delivery contract - worker-landed-lite v1
+This task ships local-only: it opens no PR and pushes nothing, and firstmate performs the merge. The worker-landed statements about a merged PR and about recording \`pr=\` cannot bind here, because there is no PR to merge or to record. The two that do bind are absolute:
+1. **You hold no merge authority.** Never invoke a firstmate merge helper (\`fm-pr-merge.sh\`, \`fm-merge-local.sh\`) and never merge anything yourself, including into local \`main\`.
+2. **Single-ref delivery, in its strictest form.** Work only on your \`fm/$ID\` branch and push nothing to any remote. No side refs, no additional remotes, no other repositories.
+EOF
+DELIVERY_CONTRACT_LOCAL_ONLY=${DELIVERY_CONTRACT_LOCAL_ONLY%$'\n'}
+
 # Ship task: shape Setup / Rule 1 / Definition of done by this task's explicit
 # delivery mode, validated above. The generated DOD opens with the fixed
 # "Delivery contract: mode=<mode>" line that bin/fm-spawn.sh checks against its own
@@ -359,9 +415,17 @@ case "$MODE" in
 # Definition of done
 Delivery contract: mode=direct-PR
 This task ships **direct-PR**: you raise the PR yourself, without the no-mistakes pipeline.
-The task is complete only when committed on your branch.
-When it is implemented and committed, push your branch and open a PR with \`gh-axi\`, then append \`done: PR {url}\` to the status file and stop.
-Do NOT run /no-mistakes. The configured merge authority decides whether to merge the PR; firstmate relays the outcome.
+Do NOT run /no-mistakes.
+When the change is implemented and committed, push your branch and open a PR with \`gh-axi\`.
+Immediately record the PR per delivery-contract step 2 and confirm \`pr=\` landed; that recording is a hard gate on continuing.
+Then hand the merge over as the human decision it is: append \`needs-decision [key=merge]: PR {url} is open; merging it is not mine\` and stop.
+That is rule 6, not rule 4's \`$PAUSED_VERB:\` - the merge is not a wait that clears on its own, it needs the configured authority to act, and only a rule 6 line reaches firstmate promptly enough to get that.
+Stopping there does not end the task; an open PR is progress, not completion. When firstmate comes back to you, re-read the PR state rather than assuming it is still open, and report the terminal line as soon as it has reached one.
+Report a terminal state exactly once, when the PR reaches one:
+- merged -> \`done: PR {url} merged\`
+- closed without merging -> \`done: PR {url} closed without merging\`
+- genuinely needs a human -> \`blocked: {why}\` or \`needs-decision: {options}\` per rules 5 and 6
+The configured merge authority decides whether to merge the PR; that decision is never yours.
 EOF
     ;;
   local-only)
@@ -384,9 +448,11 @@ EOF
     IFS= read -r -d '' DOD <<EOF || true
 # Definition of done
 Delivery contract: mode=no-mistakes
-The task is complete only when committed on your branch.
-When you believe it is complete, append \`done: {summary}\` to the status file and stop.
+This mode has two stages, and only the second one can end the task.
+Stage one is the implementation. When you believe it is implemented and committed on your branch, append \`done: {summary}\` to the status file and stop.
+That line is the mid-task handoff delivery-contract step 1 refers to: it reports the implementation, not the delivery.
 Firstmate will then instruct you to run /no-mistakes to validate and ship a PR.
+Stage two is that pipeline, and it runs through to the terminal states at the end of this section.
 
 You drive no-mistakes by responding to its gates, not by implementing fixes.
 Follow the guidance no-mistakes itself provides for the mechanics: it loads when you invoke /no-mistakes, and \`no-mistakes axi run --help\` plus the \`help\` lines in each \`axi\` response are authoritative and version-matched to the installed binary.
@@ -399,7 +465,16 @@ Two firstmate-specific rules layer on top of that guidance:
   When the decision comes back, feed it to the gate with \`no-mistakes axi respond\` and let the pipeline apply it - do not route the question to "the user" or implement the fix yourself.
 - Avoid \`--yes\`: it would silently bypass firstmate's authority check and any required captain escalation.
 
-After /no-mistakes reports CI green (the CI-ready return point - do not wait for it to keep monitoring in the background until merge), append \`done: PR {url} checks green\` and stop. You are finished.
+The pipeline opens the PR itself, so record it per delivery-contract step 2 the moment the pipeline shows you that URL, not once the pipeline hands control back to you.
+That recording only writes firstmate-side metadata outside the repo, so it cannot disturb the active run, and it keeps the PR associated even if you stop before CI turns green.
+Return from the pipeline at its CI-ready point - do not leave /no-mistakes monitoring in the background until merge - and confirm \`pr=\` landed before you continue past that point.
+Green CI is NOT done. Hand the merge over as the human decision it is: append \`needs-decision [key=merge]: PR {url} checks green; merging it is not mine\` and stop.
+That is rule 6, not rule 4's \`$PAUSED_VERB:\` - the merge is not a wait that clears on its own, it needs the configured authority to act, and only a rule 6 line reaches firstmate promptly enough to get that.
+Stopping there does not end the task; a green PR is progress, not completion. When firstmate comes back to you, re-read the PR state rather than assuming it is still open, and report the terminal line as soon as it has reached one.
+Report a terminal state exactly once, when the PR reaches one:
+- merged -> \`done: PR {url} merged\`
+- closed without merging -> \`done: PR {url} closed without merging\`
+- genuinely needs a human -> \`blocked: {why}\` or \`needs-decision: {options}\` per rules 5 and 6
 EOF
     ;;
 esac
@@ -409,10 +484,17 @@ esac
 # briefs stay byte-identical to the historical Bash 5 output.
 DOD=${DOD%$'\n'}
 
+if [ "$MODE" = local-only ]; then
+  SHIP_CONTRACT=$DELIVERY_CONTRACT_LOCAL_ONLY
+else
+  SHIP_CONTRACT=$DELIVERY_CONTRACT
+fi
+
 cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
+$FM_DELIVERY_CONTRACT_SENTINEL
 
-# Task
+$FM_BRIEF_TASK_BODY_DELIMITER
 {TASK}
 
 $HERDR_SECTION
@@ -458,6 +540,8 @@ Record only project knowledge useful to almost every future session.
 For anything the codebase already shows, prefer a pointer to the authoritative file, command, or doc over copying the detail.
 If you touch a project \`AGENTS.md\` that lacks \`## Maintaining this file\`, add that short self-governance section from \`$FM_ROOT/bin/fm-ensure-agents-md.sh\` in the same pass.
 Keep it proportionate: skip \`AGENTS.md\` edits for trivial tasks that produced no durable project knowledge.
+
+$SHIP_CONTRACT
 
 $DOD
 EOF

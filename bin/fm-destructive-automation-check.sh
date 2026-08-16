@@ -544,6 +544,8 @@ bin/fm-merge-local.sh	[ "$MODE" = local-only ] || { echo "error: task $ID is mod
 bin/fm-test-run.sh	bin/fm-teardown.sh)	test-family classification case label, matching that path as data
 bin/fm-test-run.sh	bin/fm-pr-*|bin/fm-merge-local.sh|bin/fm-review-diff.sh| bin/fm-x-*|bin/fm-check*)	test-family classification glob, matching those paths as data
 bin/fm-merge-local.sh	ID=${1:?usage: fm-merge-local.sh <task-id>}	the script's own name inside its usage string, not an invocation
+bin/fm-brief.sh	3. **You hold no merge authority.** Never invoke a firstmate merge helper (\`fm-pr-merge.sh\`, \`fm-merge-local.sh\`), never merge the PR, never enable auto-merge on it, and never force-push it. Merge authorization is server-side branch protection plus the merge queue, and nothing you hold can bypass either.	one numbered statement inside the quoted heredoc that assembles the delivery contract for a crewmate, so the line is brief text the script writes rather than a command it runs; it names both helpers in order to forbid the worker from invoking them, which is why the names cannot be dropped to satisfy this rule
+bin/fm-brief.sh	1. **You hold no merge authority.** Never invoke a firstmate merge helper (\`fm-pr-merge.sh\`, \`fm-merge-local.sh\`) and never merge anything yourself, including into local \`main\`.	the same prohibition in the local-only variant of that contract, and the same quoted heredoc; local-only opens no PR, so the statement drops the PR-specific clauses and keeps the ban
 ENTRIES
 )
 

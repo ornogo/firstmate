@@ -297,7 +297,7 @@ test_faster_paths_use_configured_authority_without_stacked_review() {
   id="brief-direct-authority-a4"
   FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" direct-proj --mode direct-PR >/dev/null 2>&1
   brief="$home/data/$id/brief.md"
-  assert_grep "The configured merge authority decides whether to merge the PR; firstmate relays the outcome." "$brief" \
+  assert_grep "The configured merge authority decides whether to merge the PR; that decision is never yours." "$brief" \
     "direct-PR brief lost configured merge authority"
   assert_no_grep "The captain reviews and merges the PR" "$brief" \
     "direct-PR brief hard-coded captain-only authority"
@@ -317,6 +317,253 @@ test_faster_paths_use_configured_authority_without_stacked_review() {
   assert_no_grep "make \`--intent\` preserve all relevant content from this brief" "$home/data/$id/brief.md" \
     "direct-PR brief must not include the no-mistakes --intent contract"
   pass "fm-brief.sh: faster paths use configured authority without stacked review"
+}
+
+# The spawn-time check landing in the following increment reads a brief only from
+# its first line down to the first task-body delimiter, and refuses unless that
+# region carries the sentinel as a whole line. This scaffold is the sole producer
+# of briefs that will pass it, so every task brief it writes has to place the
+# sentinel strictly above the delimiter: a sentinel that drifts below it, or a
+# delimiter that disappears, turns that check into a blanket refusal.
+# A secondmate charter has no task body and therefore no delimiter to bound a
+# header region, so the predicate is undefined for it and it carries no sentinel.
+test_delivery_contract_sentinel_rides_above_the_task_delimiter() {
+  local home id_args id args brief sentinel_line task_line
+  home="$TMP_ROOT/sentinel-home"
+  mkdir -p "$home/data"
+
+  for id_args in \
+    "brief-sentinel-c1:--mode no-mistakes" \
+    "brief-sentinel-c2:--mode direct-PR" \
+    "brief-sentinel-c3:--mode local-only" \
+    "brief-sentinel-c4:--scout"; do
+    id=${id_args%%:*}
+    args=${id_args#*:}
+    # shellcheck disable=SC2086  # args is an intentional word-split arg list
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj $args >/dev/null 2>&1 \
+      || fail "$id: scaffold with $args should exit 0"
+    brief="$home/data/$id/brief.md"
+    grep -qxF 'DELIVERY-CONTRACT: worker-landed-lite v1' "$brief" \
+      || fail "$id: brief carries no whole-line worker-landed-lite sentinel"
+    sentinel_line=$(grep -nxF 'DELIVERY-CONTRACT: worker-landed-lite v1' "$brief" | head -n 1 | cut -d: -f1)
+    task_line=$(grep -nxF '# Task' "$brief" | head -n 1 | cut -d: -f1)
+    [ -n "$task_line" ] || fail "$id: brief has no task-body delimiter to bound the checked header region"
+    [ "$sentinel_line" -lt "$task_line" ] \
+      || fail "$id: sentinel is on line $sentinel_line, not above the task-body delimiter on line $task_line"
+  done
+
+  FM_HOME="$home" FM_SECONDMATE_CHARTER='fixture charter' \
+    "$ROOT/bin/fm-brief.sh" brief-sentinel-c5 --secondmate --no-projects >/dev/null 2>&1 \
+    || fail "secondmate charter should scaffold"
+  assert_no_grep 'DELIVERY-CONTRACT:' "$home/data/brief-sentinel-c5/brief.md" \
+    "a charter has no task body to bound a header region, so it must not claim the sentinel"
+  pass "fm-brief.sh: every task brief carries the sentinel above the task-body delimiter"
+}
+
+# The worker-landed-lite contract rides in the brief rather than in a mode
+# registration, so the brief text is the only place these four statements exist
+# for a PR-delivering worker. Losing any one of them changes what the worker
+# does: it stops at an open PR, never records `pr=`, merges its own work, or
+# pushes side refs.
+test_pr_delivering_briefs_carry_the_whole_worker_landed_contract() {
+  local home mode id brief
+  home="$TMP_ROOT/worker-landed-home"
+  mkdir -p "$home/data"
+
+  for mode in no-mistakes direct-PR; do
+    id="brief-landed-${mode}"
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode "$mode" >/dev/null 2>&1 \
+      || fail "$id: scaffold should exit 0"
+    brief="$home/data/$id/brief.md"
+    assert_grep '**Done means merged.**' "$brief" \
+      "$mode: brief lost the done-means-merged statement"
+    assert_grep '**Record the PR the moment it exists.**' "$brief" \
+      "$mode: brief lost the PR-recording statement"
+    assert_grep "bin/fm-pr-check.sh' $id '{url}'" "$brief" \
+      "$mode: brief does not name the exact fm-pr-check.sh invocation for this task"
+    assert_grep 'is a HARD STOP' "$brief" \
+      "$mode: a failed recording must be a hard stop, not a warning"
+    assert_grep '**You hold no merge authority.**' "$brief" \
+      "$mode: brief lost the no-merge-authority statement"
+    assert_grep '**Single-ref delivery.**' "$brief" \
+      "$mode: brief lost the single-ref delivery statement"
+
+    # Terminal states: a pushed branch, an open PR, and green CI are all
+    # mid-flight, so none of them may end the task.
+    assert_grep 'done: PR {url} merged' "$brief" \
+      "$mode: brief does not report a merged PR as a terminal state"
+    assert_grep 'done: PR {url} closed without merging' "$brief" \
+      "$mode: brief does not report a closed PR as a terminal state"
+    assert_no_grep 'done: PR {url} checks green' "$brief" \
+      "$mode: brief still ends the task at green CI"
+
+    # The merge needs the configured authority to act, so by this repo's own
+    # vocabulary (bin/fm-classify-lib.sh) it is rule 6's needs-decision, not
+    # rule 4's pause verb - a pause means a wait that clears on its own, and it
+    # is deliberately suppressed from captain-relevant wakes. Getting this wrong
+    # both contradicts rule 4 inside the same brief and files the one event that
+    # has to reach firstmate under the one verb that will not.
+    assert_grep 'needs-decision [key=merge]:' "$brief" \
+      "$mode: brief does not hand the merge over as a decision"
+    assert_no_grep 'awaiting merge on PR' "$brief" \
+      "$mode: brief still files the merge wait as a self-clearing pause"
+    # The decision line ends the worker's turn, so without this the surrounding
+    # "and stop" reads as terminal and the worker never returns for the merge.
+    assert_grep 'Stopping there does not end the task' "$brief" \
+      "$mode: brief lets the decision hand-off read as the end of the task"
+    assert_grep 're-read the PR state' "$brief" \
+      "$mode: brief lets the worker assume the PR is still open"
+  done
+
+  assert_grep 'Green CI is NOT done' "$home/data/brief-landed-no-mistakes/brief.md" \
+    "no-mistakes: brief does not say green CI is not done"
+  # The pipeline opens the PR well before it returns CI-ready. Anchoring the
+  # recording to the return instead of to PR creation would leave every PR
+  # unassociated whenever CI fails, a gate parks, or the worker stops in
+  # between - and an unassociated PR is one firstmate never watches for a merge.
+  assert_grep 'the moment the pipeline shows you that URL' \
+    "$home/data/brief-landed-no-mistakes/brief.md" \
+    "no-mistakes: brief does not record the PR at creation time"
+  assert_no_grep 'At that point, record the PR' \
+    "$home/data/brief-landed-no-mistakes/brief.md" \
+    "no-mistakes: brief still defers recording the PR to the CI-ready return"
+  assert_grep 'an open PR is progress, not completion' \
+    "$home/data/brief-landed-direct-PR/brief.md" \
+    "direct-PR: brief does not say an open PR is not completion"
+  # Handing the merge over as a decision is precisely a stop, so the older
+  # blanket prohibition on stopping would now contradict the line above it.
+  assert_no_grep 'so do NOT stop here' \
+    "$home/data/brief-landed-direct-PR/brief.md" \
+    "direct-PR: brief still forbids the stop its own decision line requires"
+
+  # no-mistakes is the one mode that writes two `done:` lines: an implementation
+  # handoff that triggers validation, and the delivery's terminal line. Statement
+  # 1 reserves completion for the delivery, so the handoff has to be named as a
+  # handoff in both places or the brief contradicts itself - and a worker
+  # resolving that contradiction either way breaks the mode. Dropping the handoff
+  # strands firstmate with no validation trigger; treating it as terminal ends the
+  # task before a PR exists.
+  assert_grep 'That line is the mid-task handoff' \
+    "$home/data/brief-landed-no-mistakes/brief.md" \
+    "no-mistakes: the pre-validation done: is not marked as a mid-task handoff"
+  assert_grep "append \`done: {summary}\` to the status file and stop" \
+    "$home/data/brief-landed-no-mistakes/brief.md" \
+    "no-mistakes: brief lost the implementation handoff that triggers validation"
+  assert_no_grep 'The task is complete only when committed on your branch' \
+    "$home/data/brief-landed-no-mistakes/brief.md" \
+    "no-mistakes: brief still calls the implementation commit the whole task"
+  for mode in no-mistakes direct-PR; do
+    assert_grep 'may also have you append one earlier' \
+      "$home/data/brief-landed-$mode/brief.md" \
+      "$mode: statement 1 does not reconcile an earlier handoff done:"
+  done
+  pass "fm-brief.sh: PR-delivering briefs carry all four worker-landed-lite statements"
+}
+
+# The recording command runs in the crewmate's environment, not firstmate's, and
+# fm-spawn.sh injects FM_HOME only for a secondmate. Where FM_HOME selects a home
+# apart from the code root, a bare invocation resolves its state directory to the
+# code root, finds no metadata, and trips the hard stop on every PR delivery. A
+# text assertion cannot see that, so run what the brief actually tells the worker
+# to run, from an environment carrying no FM_HOME at all, and check where pr=
+# landed. Both the home and the code root carry a space here, because the worker
+# runs this line verbatim and recording is a hard gate: an unquoted path would
+# block delivery outright in a checkout under such a path.
+test_the_rendered_pr_recording_command_targets_this_home() {
+  local home fakebin spaced_root id brief cmd raw_cmd url evil_url sep_marker sub_marker
+  home="$TMP_ROOT/pr check home"
+  fakebin="$TMP_ROOT/pr-check-bin"
+  spaced_root="$TMP_ROOT/code root with space"
+  id="brief-prcheck"
+  url="https://github.com/o/r/pull/7"
+  mkdir -p "$home/data" "$home/state" "$fakebin"
+  ln -snf "$ROOT" "$spaced_root"
+
+  # Stands in for the forge lookup of the PR head; fm-pr-check.sh treats an
+  # absent sha as merely unavailable, so this keeps the test off the network
+  # without changing the path under test.
+  cat > "$fakebin/gh" <<'SH'
+#!/usr/bin/env bash
+case " $* " in
+  *" headRefOid "*) printf '%s\n' 0123456789abcdef0123456789abcdef01234567 ;;
+esac
+SH
+  chmod +x "$fakebin/gh"
+
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$spaced_root" "$ROOT/bin/fm-brief.sh" "$id" some-proj \
+    --mode direct-PR >/dev/null 2>&1 || fail "$id: scaffold should exit 0"
+  brief="$home/data/$id/brief.md"
+
+  fm_write_meta "$home/state/$id.meta" \
+    "window=firstmate:fm-$id" \
+    "endpoint_task_id=$id" \
+    "worktree=$home" \
+    "project=$home" \
+    "kind=ship" \
+    "mode=direct-PR"
+  chmod 600 "$home/state/$id.meta"
+
+  # Take the command out of the generated brief rather than rebuilding it here,
+  # so the test breaks if the brief stops handing over a runnable one.
+  raw_cmd=$(grep -o "FM_HOME=[^\`]*fm-pr-check\.sh' $id '{url}'" "$brief" | head -1)
+  [ -n "$raw_cmd" ] || fail "brief does not render a self-contained fm-pr-check.sh command"
+  cmd=${raw_cmd/\{url\}/$url}
+
+  # No FM_HOME, no FM_STATE_OVERRIDE: exactly what an ordinary crewmate launch
+  # leaves in the environment.
+  ( unset FM_HOME FM_STATE_OVERRIDE FM_ROOT_OVERRIDE
+    PATH="$fakebin:$PATH" eval "$cmd" ) >/dev/null 2>&1 \
+    || fail "the brief's own recording command fails when FM_HOME is not inherited"
+
+  assert_grep "pr=$url" "$home/state/$id.meta" \
+    "the recording did not land pr= in this home's task record"
+  [ ! -f "$ROOT/state/$id.meta" ] \
+    || fail "the recording wrote into the code root instead of the active home"
+
+  # The worker fills the placeholder in, so the URL is the one part of this line
+  # the scaffold never sees. The helper validates what it is handed and refuses a
+  # malformed URL, but it can only do that if the whole string arrives as one
+  # argument: an unquoted placeholder lets the shell split or run parts of it
+  # first, and the refusal never happens. Cover both metacharacter classes.
+  sep_marker="$TMP_ROOT/pr-check-separator-ran"
+  sub_marker="$TMP_ROOT/pr-check-substitution-ran"
+  evil_url="https://github.com/o/r/pull/7\$(touch $sub_marker); touch $sep_marker"
+  ( unset FM_HOME FM_STATE_OVERRIDE FM_ROOT_OVERRIDE
+    PATH="$fakebin:$PATH" eval "${raw_cmd/\{url\}/$evil_url}" ) >/dev/null 2>&1 \
+    && fail "the recording command accepted a URL carrying shell metacharacters"
+  assert_absent "$sep_marker" \
+    "the rendered command let a command separator in the URL run"
+  assert_absent "$sub_marker" \
+    "the rendered command let a command substitution in the URL run"
+  assert_grep "pr=$url" "$home/state/$id.meta" \
+    "the refused URL disturbed the pr= already recorded for this task"
+  pass "fm-brief.sh: the brief's PR-recording command records into the active home"
+}
+
+# local-only opens no PR and hands the merge to firstmate, so "done means merged"
+# and "record the PR" have nothing to bind. Emitting them anyway would give the
+# worker self-contradictory instructions, so the variant carries the two
+# statements that do bind and states why the other two cannot - a stated gap
+# rather than a silent one.
+test_local_only_carries_only_the_binding_contract_statements() {
+  local home brief
+  home="$TMP_ROOT/worker-landed-local-home"
+  mkdir -p "$home/data"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-landed-local some-proj --mode local-only >/dev/null 2>&1 \
+    || fail "local-only scaffold should exit 0"
+  brief="$home/data/brief-landed-local/brief.md"
+
+  assert_grep '**You hold no merge authority.**' "$brief" \
+    "local-only: brief lost the no-merge-authority statement"
+  assert_grep '**Single-ref delivery, in its strictest form.**' "$brief" \
+    "local-only: brief lost the single-ref delivery statement"
+  assert_grep 'cannot bind here, because there is no PR to merge or to record' "$brief" \
+    "local-only: brief does not state why the two PR statements cannot bind"
+  assert_no_grep 'fm-pr-check.sh' "$brief" \
+    "local-only: brief tells the worker to record a PR it never opens"
+  assert_no_grep '**Done means merged.**' "$brief" \
+    "local-only: brief claims done means merged on a path that opens no PR"
+  pass "fm-brief.sh: local-only carries the binding statements and names the gap"
 }
 
 # Pin the specific line the bug lived on: the no-mistakes DOD's no-mistakes
@@ -718,6 +965,10 @@ test_ship_mode_is_required_and_closed_set
 test_ship_mode_is_explicit_not_registry
 test_delivery_flags_are_refused_where_they_do_not_apply
 test_faster_paths_use_configured_authority_without_stacked_review
+test_delivery_contract_sentinel_rides_above_the_task_delimiter
+test_pr_delivering_briefs_carry_the_whole_worker_landed_contract
+test_the_rendered_pr_recording_command_targets_this_home
+test_local_only_carries_only_the_binding_contract_statements
 test_no_mistakes_dod_wording
 test_ship_project_memory_wording
 test_herdr_lab_contract_is_explicit_and_complete
