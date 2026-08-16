@@ -408,6 +408,16 @@ test_pr_delivering_briefs_carry_the_whole_worker_landed_contract() {
 
   assert_grep 'Green CI is NOT done' "$home/data/brief-landed-no-mistakes/brief.md" \
     "no-mistakes: brief does not say green CI is not done"
+  # The pipeline opens the PR well before it returns CI-ready. Anchoring the
+  # recording to the return instead of to PR creation would leave every PR
+  # unassociated whenever CI fails, a gate parks, or the worker stops in
+  # between - and an unassociated PR is one firstmate never watches for a merge.
+  assert_grep 'the moment the pipeline shows you that URL' \
+    "$home/data/brief-landed-no-mistakes/brief.md" \
+    "no-mistakes: brief does not record the PR at creation time"
+  assert_no_grep 'At that point, record the PR' \
+    "$home/data/brief-landed-no-mistakes/brief.md" \
+    "no-mistakes: brief still defers recording the PR to the CI-ready return"
   assert_grep 'an open PR is progress, not completion, so do NOT stop here' \
     "$home/data/brief-landed-direct-PR/brief.md" \
     "direct-PR: brief does not say an open PR is not completion"

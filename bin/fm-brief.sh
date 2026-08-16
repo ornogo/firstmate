@@ -445,8 +445,9 @@ Two firstmate-specific rules layer on top of that guidance:
   When the decision comes back, feed it to the gate with \`no-mistakes axi respond\` and let the pipeline apply it - do not route the question to "the user" or implement the fix yourself.
 - Avoid \`--yes\`: it would silently bypass firstmate's authority check and any required captain escalation.
 
-Return from the pipeline at its CI-ready point - do not leave /no-mistakes monitoring in the background until merge.
-At that point, record the PR per delivery-contract step 2 and confirm \`pr=\` landed; that recording is a hard gate on continuing.
+The pipeline opens the PR itself, so record it per delivery-contract step 2 the moment the pipeline shows you that URL, not once the pipeline hands control back to you.
+That recording only writes firstmate-side metadata outside the repo, so it cannot disturb the active run, and it keeps the PR associated even if you stop before CI turns green.
+Return from the pipeline at its CI-ready point - do not leave /no-mistakes monitoring in the background until merge - and confirm \`pr=\` landed before you continue past that point.
 Green CI is NOT done: append \`working: PR {url} checks green, awaiting merge\` and do NOT stop.
 While the PR is open and nothing needs you, append \`$PAUSED_VERB: awaiting merge on PR {url}\` and idle: firstmate then rechecks you on a long cadence instead of treating the quiet pane as a wedge.
 Only a merge reaches firstmate promptly; every other outcome, a close included, arrives on that slower recheck. So whenever you are rechecked, re-read the PR state first and report the terminal line if it has reached one.
