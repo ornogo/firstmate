@@ -297,7 +297,7 @@ test_faster_paths_use_configured_authority_without_stacked_review() {
   id="brief-direct-authority-a4"
   FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" direct-proj --mode direct-PR >/dev/null 2>&1
   brief="$home/data/$id/brief.md"
-  assert_grep "The configured merge authority decides whether to merge the PR; firstmate relays the outcome." "$brief" \
+  assert_grep "The configured merge authority decides whether to merge the PR; that decision is never yours." "$brief" \
     "direct-PR brief lost configured merge authority"
   assert_no_grep "The captain reviews and merges the PR" "$brief" \
     "direct-PR brief hard-coded captain-only authority"
@@ -317,6 +317,119 @@ test_faster_paths_use_configured_authority_without_stacked_review() {
   assert_no_grep "make \`--intent\` preserve all relevant content from this brief" "$home/data/$id/brief.md" \
     "direct-PR brief must not include the no-mistakes --intent contract"
   pass "fm-brief.sh: faster paths use configured authority without stacked review"
+}
+
+# The spawn-time check landing in the following increment reads a brief only from
+# its first line down to the first task-body delimiter, and refuses unless that
+# region carries the sentinel as a whole line. This scaffold is the sole producer
+# of briefs that will pass it, so every task brief it writes has to place the
+# sentinel strictly above the delimiter: a sentinel that drifts below it, or a
+# delimiter that disappears, turns that check into a blanket refusal.
+# A secondmate charter has no task body and therefore no delimiter to bound a
+# header region, so the predicate is undefined for it and it carries no sentinel.
+test_delivery_contract_sentinel_rides_above_the_task_delimiter() {
+  local home id_args id args brief sentinel_line task_line
+  home="$TMP_ROOT/sentinel-home"
+  mkdir -p "$home/data"
+
+  for id_args in \
+    "brief-sentinel-c1:--mode no-mistakes" \
+    "brief-sentinel-c2:--mode direct-PR" \
+    "brief-sentinel-c3:--mode local-only" \
+    "brief-sentinel-c4:--scout"; do
+    id=${id_args%%:*}
+    args=${id_args#*:}
+    # shellcheck disable=SC2086  # args is an intentional word-split arg list
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj $args >/dev/null 2>&1 \
+      || fail "$id: scaffold with $args should exit 0"
+    brief="$home/data/$id/brief.md"
+    grep -qxF 'DELIVERY-CONTRACT: worker-landed-lite v1' "$brief" \
+      || fail "$id: brief carries no whole-line worker-landed-lite sentinel"
+    sentinel_line=$(grep -nxF 'DELIVERY-CONTRACT: worker-landed-lite v1' "$brief" | head -n 1 | cut -d: -f1)
+    task_line=$(grep -nxF '# Task' "$brief" | head -n 1 | cut -d: -f1)
+    [ -n "$task_line" ] || fail "$id: brief has no task-body delimiter to bound the checked header region"
+    [ "$sentinel_line" -lt "$task_line" ] \
+      || fail "$id: sentinel is on line $sentinel_line, not above the task-body delimiter on line $task_line"
+  done
+
+  FM_HOME="$home" FM_SECONDMATE_CHARTER='fixture charter' \
+    "$ROOT/bin/fm-brief.sh" brief-sentinel-c5 --secondmate --no-projects >/dev/null 2>&1 \
+    || fail "secondmate charter should scaffold"
+  assert_no_grep 'DELIVERY-CONTRACT:' "$home/data/brief-sentinel-c5/brief.md" \
+    "a charter has no task body to bound a header region, so it must not claim the sentinel"
+  pass "fm-brief.sh: every task brief carries the sentinel above the task-body delimiter"
+}
+
+# The worker-landed-lite contract rides in the brief rather than in a mode
+# registration, so the brief text is the only place these four statements exist
+# for a PR-delivering worker. Losing any one of them changes what the worker
+# does: it stops at an open PR, never records `pr=`, merges its own work, or
+# pushes side refs.
+test_pr_delivering_briefs_carry_the_whole_worker_landed_contract() {
+  local home mode id brief
+  home="$TMP_ROOT/worker-landed-home"
+  mkdir -p "$home/data"
+
+  for mode in no-mistakes direct-PR; do
+    id="brief-landed-${mode}"
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode "$mode" >/dev/null 2>&1 \
+      || fail "$id: scaffold should exit 0"
+    brief="$home/data/$id/brief.md"
+    assert_grep '**Done means merged.**' "$brief" \
+      "$mode: brief lost the done-means-merged statement"
+    assert_grep '**Record the PR the moment it exists.**' "$brief" \
+      "$mode: brief lost the PR-recording statement"
+    assert_grep "bin/fm-pr-check.sh $id {url}" "$brief" \
+      "$mode: brief does not name the exact fm-pr-check.sh invocation for this task"
+    assert_grep 'is a HARD STOP' "$brief" \
+      "$mode: a failed recording must be a hard stop, not a warning"
+    assert_grep '**You hold no merge authority.**' "$brief" \
+      "$mode: brief lost the no-merge-authority statement"
+    assert_grep '**Single-ref delivery.**' "$brief" \
+      "$mode: brief lost the single-ref delivery statement"
+
+    # Terminal states: a pushed branch, an open PR, and green CI are all
+    # mid-flight, so none of them may end the task.
+    assert_grep 'done: PR {url} merged' "$brief" \
+      "$mode: brief does not report a merged PR as a terminal state"
+    assert_grep 'done: PR {url} closed without merging' "$brief" \
+      "$mode: brief does not report a closed PR as a terminal state"
+    assert_no_grep 'done: PR {url} checks green' "$brief" \
+      "$mode: brief still ends the task at green CI"
+  done
+
+  assert_grep 'Green CI is NOT done' "$home/data/brief-landed-no-mistakes/brief.md" \
+    "no-mistakes: brief does not say green CI is not done"
+  assert_grep 'an open PR is progress, not completion, so do NOT stop here' \
+    "$home/data/brief-landed-direct-PR/brief.md" \
+    "direct-PR: brief does not say an open PR is not completion"
+  pass "fm-brief.sh: PR-delivering briefs carry all four worker-landed-lite statements"
+}
+
+# local-only opens no PR and hands the merge to firstmate, so "done means merged"
+# and "record the PR" have nothing to bind. Emitting them anyway would give the
+# worker self-contradictory instructions, so the variant carries the two
+# statements that do bind and states why the other two cannot - a stated gap
+# rather than a silent one.
+test_local_only_carries_only_the_binding_contract_statements() {
+  local home brief
+  home="$TMP_ROOT/worker-landed-local-home"
+  mkdir -p "$home/data"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-landed-local some-proj --mode local-only >/dev/null 2>&1 \
+    || fail "local-only scaffold should exit 0"
+  brief="$home/data/brief-landed-local/brief.md"
+
+  assert_grep '**You hold no merge authority.**' "$brief" \
+    "local-only: brief lost the no-merge-authority statement"
+  assert_grep '**Single-ref delivery, in its strictest form.**' "$brief" \
+    "local-only: brief lost the single-ref delivery statement"
+  assert_grep 'cannot bind here, because there is no PR to merge or to record' "$brief" \
+    "local-only: brief does not state why the two PR statements cannot bind"
+  assert_no_grep 'fm-pr-check.sh' "$brief" \
+    "local-only: brief tells the worker to record a PR it never opens"
+  assert_no_grep '**Done means merged.**' "$brief" \
+    "local-only: brief claims done means merged on a path that opens no PR"
+  pass "fm-brief.sh: local-only carries the binding statements and names the gap"
 }
 
 # Pin the specific line the bug lived on: the no-mistakes DOD's no-mistakes
@@ -718,6 +831,9 @@ test_ship_mode_is_required_and_closed_set
 test_ship_mode_is_explicit_not_registry
 test_delivery_flags_are_refused_where_they_do_not_apply
 test_faster_paths_use_configured_authority_without_stacked_review
+test_delivery_contract_sentinel_rides_above_the_task_delimiter
+test_pr_delivering_briefs_carry_the_whole_worker_landed_contract
+test_local_only_carries_only_the_binding_contract_statements
 test_no_mistakes_dod_wording
 test_ship_project_memory_wording
 test_herdr_lab_contract_is_explicit_and_complete

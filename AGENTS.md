@@ -343,12 +343,13 @@ Resume fleet supervision immediately after the decision lands.
 Judge validation by the current-code-matched run step through `bin/fm-crew-state.sh`, not by shell liveness or the last status event.
 Running, fixing, or CI states remain working; parked approval or fix-review states require the worker to follow the active gate help; passed or checks-passed is done; failed or cancelled is failed.
 A worker hand-editing, committing, aborting, or restarting during an active validation run duplicates pipeline ownership outside the supersession sequence above; steer it back to the gate response flow.
-The worker reports the PR when CI first becomes green rather than waiting for merge monitoring to finish.
+The worker reports the PR as soon as CI first becomes green rather than holding the URL back until the merge lands.
 
 ### PR ready, landing, and teardown
 
-For PR-based ship tasks, the ready signal depends on mode: `no-mistakes` reports `done: PR <url> checks green` after CI is green, while `direct-PR` reports `done: PR <url>` after opening the PR.
-Run `bin/fm-pr-check.sh <id> <PR url>` - it records `pr=` and the forge's `pr_head=` when available in the task's meta and arms the watcher's merge poll.
+For PR-based ship tasks the worker records its own PR: its brief has it run `bin/fm-pr-check.sh <id> <PR url>` as soon as the PR exists, which writes `pr=` and the forge's `pr_head=` when available into the task's meta and arms the watcher's merge poll.
+It then reports that URL on a `working:` line - `direct-PR` once the PR is open, `no-mistakes` once CI is green - and holds until the PR reaches a terminal state, so a ship task's `done:` line means merged or closed without merging, never a pushed branch, an open PR, or green CI.
+A worker whose recording did not land stops with a blocker instead of carrying the delivery toward merge; run `bin/fm-pr-check.sh <id> <PR url>` yourself before treating that PR as tracked.
 Tell the captain the PR's full URL, always the complete `https://...` link rather than a bare `#number`, a concise outcome summary, and the no-mistakes risk level when applicable.
 A captain instruction to merge is explicit authority; `yolo` is the only standing routine authority.
 For any custom `state/<id>.check.sh` you write yourself, keep it an ordinary single-link mode-`0700` file, print one line only when firstmate should wake, print nothing otherwise, finish before `FM_CHECK_TIMEOUT`, then bind its current bytes with `bin/fm-check-register.sh <id>` before the watcher may execute it.
