@@ -204,7 +204,12 @@ STATUS_FILE=$(shell_quote "$STATE/$ID.status")
 # one. Every interpolated path is quoted, the helper path included: the worker
 # is told to run this line verbatim, and recording is a hard gate, so a checkout
 # or home under a path with a space would otherwise block PR delivery outright.
-PR_CHECK_CMD="FM_HOME=$(shell_quote "$FM_HOME") FM_STATE_OVERRIDE=$(shell_quote "$STATE") $(shell_quote "$FM_ROOT/bin/fm-pr-check.sh") $ID {url}"
+# The {url} placeholder is quoted for the same reason, even though the worker
+# rather than the scaffold fills it in: the helper validates the URL it is
+# handed and rejects a malformed one, which it can only do if the whole string
+# reaches it as one argument instead of being split or interpreted by the shell
+# on the way.
+PR_CHECK_CMD="FM_HOME=$(shell_quote "$FM_HOME") FM_STATE_OVERRIDE=$(shell_quote "$STATE") $(shell_quote "$FM_ROOT/bin/fm-pr-check.sh") $ID '{url}'"
 
 if [ "$KIND" = secondmate ]; then
 SECONDMATE_PROJECTS=""

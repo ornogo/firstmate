@@ -379,7 +379,7 @@ test_pr_delivering_briefs_carry_the_whole_worker_landed_contract() {
       "$mode: brief lost the done-means-merged statement"
     assert_grep '**Record the PR the moment it exists.**' "$brief" \
       "$mode: brief lost the PR-recording statement"
-    assert_grep "bin/fm-pr-check.sh' $id {url}" "$brief" \
+    assert_grep "bin/fm-pr-check.sh' $id '{url}'" "$brief" \
       "$mode: brief does not name the exact fm-pr-check.sh invocation for this task"
     assert_grep 'is a HARD STOP' "$brief" \
       "$mode: a failed recording must be a hard stop, not a warning"
@@ -456,7 +456,7 @@ test_pr_delivering_briefs_carry_the_whole_worker_landed_contract() {
 # runs this line verbatim and recording is a hard gate: an unquoted path would
 # block delivery outright in a checkout under such a path.
 test_the_rendered_pr_recording_command_targets_this_home() {
-  local home fakebin spaced_root id brief cmd url
+  local home fakebin spaced_root id brief cmd raw_cmd url evil_url sep_marker sub_marker
   home="$TMP_ROOT/pr check home"
   fakebin="$TMP_ROOT/pr-check-bin"
   spaced_root="$TMP_ROOT/code root with space"
@@ -491,9 +491,9 @@ SH
 
   # Take the command out of the generated brief rather than rebuilding it here,
   # so the test breaks if the brief stops handing over a runnable one.
-  cmd=$(grep -o "FM_HOME=[^\`]*fm-pr-check\.sh' $id {url}" "$brief" | head -1)
-  [ -n "$cmd" ] || fail "brief does not render a self-contained fm-pr-check.sh command"
-  cmd=${cmd/\{url\}/$url}
+  raw_cmd=$(grep -o "FM_HOME=[^\`]*fm-pr-check\.sh' $id '{url}'" "$brief" | head -1)
+  [ -n "$raw_cmd" ] || fail "brief does not render a self-contained fm-pr-check.sh command"
+  cmd=${raw_cmd/\{url\}/$url}
 
   # No FM_HOME, no FM_STATE_OVERRIDE: exactly what an ordinary crewmate launch
   # leaves in the environment.
@@ -505,6 +505,24 @@ SH
     "the recording did not land pr= in this home's task record"
   [ ! -f "$ROOT/state/$id.meta" ] \
     || fail "the recording wrote into the code root instead of the active home"
+
+  # The worker fills the placeholder in, so the URL is the one part of this line
+  # the scaffold never sees. The helper validates what it is handed and refuses a
+  # malformed URL, but it can only do that if the whole string arrives as one
+  # argument: an unquoted placeholder lets the shell split or run parts of it
+  # first, and the refusal never happens. Cover both metacharacter classes.
+  sep_marker="$TMP_ROOT/pr-check-separator-ran"
+  sub_marker="$TMP_ROOT/pr-check-substitution-ran"
+  evil_url="https://github.com/o/r/pull/7\$(touch $sub_marker); touch $sep_marker"
+  ( unset FM_HOME FM_STATE_OVERRIDE FM_ROOT_OVERRIDE
+    PATH="$fakebin:$PATH" eval "${raw_cmd/\{url\}/$evil_url}" ) >/dev/null 2>&1 \
+    && fail "the recording command accepted a URL carrying shell metacharacters"
+  assert_absent "$sep_marker" \
+    "the rendered command let a command separator in the URL run"
+  assert_absent "$sub_marker" \
+    "the rendered command let a command substitution in the URL run"
+  assert_grep "pr=$url" "$home/state/$id.meta" \
+    "the refused URL disturbed the pr= already recorded for this task"
   pass "fm-brief.sh: the brief's PR-recording command records into the active home"
 }
 
