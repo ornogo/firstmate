@@ -193,6 +193,18 @@ shell_quote() {
 
 STATUS_FILE=$(shell_quote "$STATE/$ID.status")
 
+# fm-pr-check.sh resolves its state directory from the environment, and an
+# ordinary crewmate launch carries no FM_HOME: fm-spawn.sh injects one only for
+# a secondmate, and a backend that opens a fresh window need not pass firstmate's
+# own environment through. Where FM_HOME selects a home apart from the code root,
+# an unprefixed invocation would look for the task metadata under the code root,
+# fail, and trip the recording hard stop on every delivery. So render the
+# scaffold's already-resolved home and state into the command, for the same
+# reason $STATUS_FILE is handed over as an absolute path rather than a relative
+# one. The script path itself stays interpolated in the style the surrounding
+# brief text already uses for firstmate helpers.
+PR_CHECK_CMD="FM_HOME=$(shell_quote "$FM_HOME") FM_STATE_OVERRIDE=$(shell_quote "$STATE") $FM_ROOT/bin/fm-pr-check.sh $ID {url}"
+
 if [ "$KIND" = secondmate ]; then
 SECONDMATE_PROJECTS=""
 idx=1
@@ -371,7 +383,7 @@ fi
 IFS= read -r -d '' DELIVERY_CONTRACT <<EOF || true
 # Delivery contract - worker-landed-lite v1
 1. **Done means merged.** An open PR is progress, not completion. A pushed branch, an open PR, and green CI are all mid-flight states; none of them ends this task. The only terminal states are: the PR merged, the PR closed without merging, or a blocker that genuinely needs a human.
-2. **Record the PR the moment it exists.** As soon as the PR is open, run \`$FM_ROOT/bin/fm-pr-check.sh $ID {url}\` and confirm it exits 0. That writes the \`pr=\` association firstmate depends on; branch-based discovery does not work here, so nothing else records it. A failed run, or a \`pr=\` that never lands, is a HARD STOP: append \`blocked: fm-pr-check.sh did not record pr= for {url}\` and stop. Do not carry this delivery toward merge without that record.
+2. **Record the PR the moment it exists.** As soon as the PR is open, run \`$PR_CHECK_CMD\` exactly as written - the leading assignments point it at the records for this task - and confirm it exits 0. That writes the \`pr=\` association firstmate depends on; branch-based discovery does not work here, so nothing else records it. A failed run, or a \`pr=\` that never lands, is a HARD STOP: append \`blocked: fm-pr-check.sh did not record pr= for {url}\` and stop. Do not carry this delivery toward merge without that record.
 3. **You hold no merge authority.** Never invoke a firstmate merge helper (\`fm-pr-merge.sh\`, \`fm-merge-local.sh\`), never merge the PR, never enable auto-merge on it, and never force-push it. Merge authorization is server-side branch protection plus the merge queue, and nothing you hold can bypass either.
 4. **Single-ref delivery.** Push only your \`fm/$ID\` branch, and only to the delivery repo's \`origin\`. Open at most one PR, and only from that branch. No side refs, no additional remotes, no other repositories.
 EOF

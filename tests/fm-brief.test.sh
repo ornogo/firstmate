@@ -424,6 +424,64 @@ test_pr_delivering_briefs_carry_the_whole_worker_landed_contract() {
   pass "fm-brief.sh: PR-delivering briefs carry all four worker-landed-lite statements"
 }
 
+# The recording command runs in the crewmate's environment, not firstmate's, and
+# fm-spawn.sh injects FM_HOME only for a secondmate. Where FM_HOME selects a home
+# apart from the code root, a bare invocation resolves its state directory to the
+# code root, finds no metadata, and trips the hard stop on every PR delivery. A
+# text assertion cannot see that, so run what the brief actually tells the worker
+# to run, from an environment carrying no FM_HOME at all, and check where pr=
+# landed.
+test_the_rendered_pr_recording_command_targets_this_home() {
+  local home fakebin id brief cmd url
+  home="$TMP_ROOT/pr-check-home"
+  fakebin="$TMP_ROOT/pr-check-bin"
+  id="brief-prcheck"
+  url="https://github.com/o/r/pull/7"
+  mkdir -p "$home/data" "$home/state" "$fakebin"
+
+  # Stands in for the forge lookup of the PR head; fm-pr-check.sh treats an
+  # absent sha as merely unavailable, so this keeps the test off the network
+  # without changing the path under test.
+  cat > "$fakebin/gh" <<'SH'
+#!/usr/bin/env bash
+case " $* " in
+  *" headRefOid "*) printf '%s\n' 0123456789abcdef0123456789abcdef01234567 ;;
+esac
+SH
+  chmod +x "$fakebin/gh"
+
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode direct-PR >/dev/null 2>&1 \
+    || fail "$id: scaffold should exit 0"
+  brief="$home/data/$id/brief.md"
+
+  fm_write_meta "$home/state/$id.meta" \
+    "window=firstmate:fm-$id" \
+    "endpoint_task_id=$id" \
+    "worktree=$home" \
+    "project=$home" \
+    "kind=ship" \
+    "mode=direct-PR"
+  chmod 600 "$home/state/$id.meta"
+
+  # Take the command out of the generated brief rather than rebuilding it here,
+  # so the test breaks if the brief stops handing over a runnable one.
+  cmd=$(grep -o "FM_HOME=[^\`]*fm-pr-check\.sh $id {url}" "$brief" | head -1)
+  [ -n "$cmd" ] || fail "brief does not render a self-contained fm-pr-check.sh command"
+  cmd=${cmd/\{url\}/$url}
+
+  # No FM_HOME, no FM_STATE_OVERRIDE: exactly what an ordinary crewmate launch
+  # leaves in the environment.
+  ( unset FM_HOME FM_STATE_OVERRIDE FM_ROOT_OVERRIDE
+    PATH="$fakebin:$PATH" eval "$cmd" ) >/dev/null 2>&1 \
+    || fail "the brief's own recording command fails when FM_HOME is not inherited"
+
+  assert_grep "pr=$url" "$home/state/$id.meta" \
+    "the recording did not land pr= in this home's task record"
+  [ ! -f "$ROOT/state/$id.meta" ] \
+    || fail "the recording wrote into the code root instead of the active home"
+  pass "fm-brief.sh: the brief's PR-recording command records into the active home"
+}
+
 # local-only opens no PR and hands the merge to firstmate, so "done means merged"
 # and "record the PR" have nothing to bind. Emitting them anyway would give the
 # worker self-contradictory instructions, so the variant carries the two
@@ -851,6 +909,7 @@ test_delivery_flags_are_refused_where_they_do_not_apply
 test_faster_paths_use_configured_authority_without_stacked_review
 test_delivery_contract_sentinel_rides_above_the_task_delimiter
 test_pr_delivering_briefs_carry_the_whole_worker_landed_contract
+test_the_rendered_pr_recording_command_targets_this_home
 test_local_only_carries_only_the_binding_contract_statements
 test_no_mistakes_dod_wording
 test_ship_project_memory_wording
