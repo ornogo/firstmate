@@ -69,6 +69,54 @@ fm_backend_tmux_container_ensure() {
   fi
 }
 
+# fm_backend_tmux_window_exists: does <window-name> exist in <session>?
+# A probe, not an assertion: fm-spawn.sh's --resume mode must positively
+# establish that a quarantined effort's window is GONE before it creates
+# another one, and "the listing failed" is not the same answer as "the window
+# is not there". So this is tri-state and fails CLOSED - a caller that cannot
+# tell the two apart must refuse:
+#
+#   0 - the window exists           -> resume refuses
+#   1 - positively absent           -> resume may proceed
+#   2 - tmux could not answer       -> resume refuses
+#
+# A missing session (including no tmux server at all) is a genuine 1: there is
+# no window anywhere to be found. A missing tmux binary is a 2, because then
+# nothing was probed. Deliberately does NOT call fm_backend_tmux_container_ensure
+# first - that would CREATE the session as a side effect of asking a question,
+# and a refusal has to leave no spawn-side artifacts behind.
+#
+# Targets are spelled exactly as fm_backend_tmux_create_task spells them (bare
+# "$ses", no "=" prefix), so the probe and the creation cannot disagree about
+# which session they mean.
+fm_backend_tmux_window_exists() {  # <session> <window-name>
+  local ses=$1 wname=$2 names err
+  command -v tmux >/dev/null 2>&1 || return 2
+  # has-session fails for two unrelated reasons, and only one of them is an
+  # answer. "no server running" and "can't find session" positively establish
+  # that no window is there; an unreadable socket, a protocol mismatch or a
+  # server that cannot be inspected establish nothing. Collapsing the second
+  # group into absence is exactly the fail-open direction that starts a second
+  # worker, so only the messages that mean absence return 1. tmux is not
+  # localized, so matching its text is stable.
+  if ! err=$(tmux has-session -t "$ses" 2>&1); then
+    case "$err" in
+      *"no server running"*|*"can't find session"*|*"No such file or directory"*) return 1 ;;
+      *) return 2 ;;
+    esac
+  fi
+  names=$(tmux list-windows -t "$ses" -F '#{window_name}' 2>/dev/null) || return 2
+  # -F, matching fm_backend_tmux_agent_state below: a task id may contain `.`
+  # (fm_backend_validate_task_endpoint allows it), and this answer decides
+  # whether a second worker starts, so the name must match literally. `--` for
+  # the same reason: the name is data, and a leading `-` must reach grep as a
+  # pattern rather than as an option.
+  if printf '%s\n' "$names" | grep -Fqx -- "$wname"; then
+    return 0
+  fi
+  return 1
+}
+
 # fm_backend_tmux_create_task: create the task's window in <proj-abs>,
 # refusing an existing <window-name> in <session>. Mirrors fm-spawn.sh's
 # duplicate-check-then-new-window sequence, including the exact error text
