@@ -396,6 +396,14 @@ test_pr_delivering_briefs_carry_the_whole_worker_landed_contract() {
       "$mode: brief does not report a closed PR as a terminal state"
     assert_no_grep 'done: PR {url} checks green' "$brief" \
       "$mode: brief still ends the task at green CI"
+
+    # The armed merge watch emits only on a merge (bin/fm-pr-poll.sh), so a
+    # close reaches the idling worker on the slower paused recheck. The brief
+    # has to say that, or the worker treats silence as "still open" forever.
+    assert_grep 'Only a merge reaches firstmate promptly' "$brief" \
+      "$mode: brief does not tell the worker which outcomes arrive slowly"
+    assert_grep 're-read the PR state first' "$brief" \
+      "$mode: brief does not make a recheck re-read the PR state"
   done
 
   assert_grep 'Green CI is NOT done' "$home/data/brief-landed-no-mistakes/brief.md" \

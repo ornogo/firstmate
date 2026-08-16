@@ -402,6 +402,7 @@ When the change is implemented and committed, push your branch and open a PR wit
 Immediately record the PR per delivery-contract step 2 and confirm \`pr=\` landed; that recording is a hard gate on continuing.
 Then append \`working: PR {url} open, awaiting merge\` - an open PR is progress, not completion, so do NOT stop here.
 While the PR is open and nothing needs you, append \`$PAUSED_VERB: awaiting merge on PR {url}\` and idle: firstmate then rechecks you on a long cadence instead of treating the quiet pane as a wedge.
+Only a merge reaches firstmate promptly; every other outcome, a close included, arrives on that slower recheck. So whenever you are rechecked, re-read the PR state first and report the terminal line if it has reached one.
 Report a terminal state exactly once, when the PR reaches one:
 - merged -> \`done: PR {url} merged\`
 - closed without merging -> \`done: PR {url} closed without merging\`
@@ -448,6 +449,7 @@ Return from the pipeline at its CI-ready point - do not leave /no-mistakes monit
 At that point, record the PR per delivery-contract step 2 and confirm \`pr=\` landed; that recording is a hard gate on continuing.
 Green CI is NOT done: append \`working: PR {url} checks green, awaiting merge\` and do NOT stop.
 While the PR is open and nothing needs you, append \`$PAUSED_VERB: awaiting merge on PR {url}\` and idle: firstmate then rechecks you on a long cadence instead of treating the quiet pane as a wedge.
+Only a merge reaches firstmate promptly; every other outcome, a close included, arrives on that slower recheck. So whenever you are rechecked, re-read the PR state first and report the terminal line if it has reached one.
 Report a terminal state exactly once, when the PR reaches one:
 - merged -> \`done: PR {url} merged\`
 - closed without merging -> \`done: PR {url} closed without merging\`
