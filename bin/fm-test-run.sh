@@ -959,6 +959,12 @@ families_for_changed_path() {
       printf '%s\n' pure-contract-unit
       printf '%s\n' pr-forge
       ;;
+    bin/fm-proc-cwd-lib.sh)
+      # The shared cwd-attribution scan, sourced by bin/fm-teardown.sh's leaked
+      # process reap. Mirrors that caller's families.
+      printf '%s\n' pr-forge
+      printf '%s\n' pure-contract-unit
+      ;;
     bin/fm-composer-lib.sh)
       # The shared shape catalogue is vendor-rendered signal; a change to it
       # re-selects the live guard (fm-composer-matrix-live-e2e) alongside the
