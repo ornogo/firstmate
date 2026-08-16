@@ -1104,6 +1104,10 @@ admission_write_if_absent() {
   if [ -e "$dest" ] || [ -L "$dest" ]; then
     return 0
   fi
+  # A dest with no slash refuses rather than falling back to ".": this writes the
+  # only record of which efforts are admitted, and resolving it against whatever
+  # directory bootstrap happens to be standing in is a worse outcome than the
+  # ADMISSION line the caller prints when this returns non-zero.
   parent=${dest%/*}
   [ "$parent" != "$dest" ] || return 1
   mkdir -p "$parent" 2>/dev/null || return 1

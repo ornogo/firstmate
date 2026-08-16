@@ -376,8 +376,14 @@ esac
 # bootstrapped before the guard existed spawning unchanged. Any other content is
 # a refusal, not a fallback to off: a typo in the file that governs whether the
 # guard runs must never resolve to "do not guard".
+#
+# The default is cleared again inside the branch so that "absent" is the only
+# thing that means off. A file that exists but holds nothing readable is a
+# half-written config, not a decision to spawn unguarded, and it takes the same
+# refusal as a misspelled one.
 ADMIT_MODE=off
 if [ -f "$CONFIG/admission" ]; then
+  ADMIT_MODE=
   while IFS= read -r admit_mode_line || [ -n "$admit_mode_line" ]; do
     admit_mode_line=$(printf '%s' "$admit_mode_line" | tr -d '[:space:]')
     [ -n "$admit_mode_line" ] || continue

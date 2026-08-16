@@ -175,6 +175,29 @@ test_unreadable_admission_mode_is_refused_rather_than_treated_as_off() {
   pass "an unrecognized config/admission value is refused, never treated as off"
 }
 
+# Absent means off; existing-but-blank does not. A file the founder created and
+# left empty - or filled with only whitespace - is a half-written config, and
+# resolving it to off would silently spawn unguarded on a home someone was in
+# the middle of arming.
+test_a_blank_admission_file_is_refused_rather_than_treated_as_off() {
+  local case_name home out status
+  for case_name in empty whitespace; do
+    home=$(make_admit_home "blank-mode-$case_name" '')
+    if [ "$case_name" = empty ]; then
+      : > "$home/config/admission"
+    else
+      printf '\n   \n\t\n' > "$home/config/admission"
+    fi
+    out=$(run_ship_spawn "$home" "nope-admit-blank-$case_name-z11")
+    status=$?
+    expect_code 1 "$status" \
+      "the $case_name config/admission should be refused, not treated as off; got: $out"
+    assert_contains "$out" "must say 'on' or 'off'" \
+      "the $case_name config/admission was not refused as an unreadable value"
+  done
+  pass "a blank config/admission is refused rather than treated as off"
+}
+
 # An empty value would otherwise reach the guard as an empty branch or worktree.
 test_the_pair_requires_non_empty_values() {
   local home out status
@@ -397,6 +420,7 @@ test_the_pair_is_refused_on_a_scout_and_a_secondmate
 test_relaunch_refuses_a_redeclared_effort
 test_the_pair_is_refused_in_a_batch
 test_unreadable_admission_mode_is_refused_rather_than_treated_as_off
+test_a_blank_admission_file_is_refused_rather_than_treated_as_off
 test_the_pair_requires_non_empty_values
 test_an_orca_ship_spawn_cannot_be_admitted
 test_a_diverged_data_directory_is_refused
