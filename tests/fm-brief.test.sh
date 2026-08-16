@@ -397,13 +397,22 @@ test_pr_delivering_briefs_carry_the_whole_worker_landed_contract() {
     assert_no_grep 'done: PR {url} checks green' "$brief" \
       "$mode: brief still ends the task at green CI"
 
-    # The armed merge watch emits only on a merge (bin/fm-pr-poll.sh), so a
-    # close reaches the idling worker on the slower paused recheck. The brief
-    # has to say that, or the worker treats silence as "still open" forever.
-    assert_grep 'Only a merge reaches firstmate promptly' "$brief" \
-      "$mode: brief does not tell the worker which outcomes arrive slowly"
-    assert_grep 're-read the PR state first' "$brief" \
-      "$mode: brief does not make a recheck re-read the PR state"
+    # The merge needs the configured authority to act, so by this repo's own
+    # vocabulary (bin/fm-classify-lib.sh) it is rule 6's needs-decision, not
+    # rule 4's pause verb - a pause means a wait that clears on its own, and it
+    # is deliberately suppressed from captain-relevant wakes. Getting this wrong
+    # both contradicts rule 4 inside the same brief and files the one event that
+    # has to reach firstmate under the one verb that will not.
+    assert_grep 'needs-decision [key=merge]:' "$brief" \
+      "$mode: brief does not hand the merge over as a decision"
+    assert_no_grep 'awaiting merge on PR' "$brief" \
+      "$mode: brief still files the merge wait as a self-clearing pause"
+    # The decision line ends the worker's turn, so without this the surrounding
+    # "and stop" reads as terminal and the worker never returns for the merge.
+    assert_grep 'Stopping there does not end the task' "$brief" \
+      "$mode: brief lets the decision hand-off read as the end of the task"
+    assert_grep 're-read the PR state' "$brief" \
+      "$mode: brief lets the worker assume the PR is still open"
   done
 
   assert_grep 'Green CI is NOT done' "$home/data/brief-landed-no-mistakes/brief.md" \
@@ -418,9 +427,14 @@ test_pr_delivering_briefs_carry_the_whole_worker_landed_contract() {
   assert_no_grep 'At that point, record the PR' \
     "$home/data/brief-landed-no-mistakes/brief.md" \
     "no-mistakes: brief still defers recording the PR to the CI-ready return"
-  assert_grep 'an open PR is progress, not completion, so do NOT stop here' \
+  assert_grep 'an open PR is progress, not completion' \
     "$home/data/brief-landed-direct-PR/brief.md" \
     "direct-PR: brief does not say an open PR is not completion"
+  # Handing the merge over as a decision is precisely a stop, so the older
+  # blanket prohibition on stopping would now contradict the line above it.
+  assert_no_grep 'so do NOT stop here' \
+    "$home/data/brief-landed-direct-PR/brief.md" \
+    "direct-PR: brief still forbids the stop its own decision line requires"
 
   # no-mistakes is the one mode that writes two `done:` lines: an implementation
   # handoff that triggers validation, and the delivery's terminal line. Statement

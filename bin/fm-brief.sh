@@ -418,9 +418,9 @@ This task ships **direct-PR**: you raise the PR yourself, without the no-mistake
 Do NOT run /no-mistakes.
 When the change is implemented and committed, push your branch and open a PR with \`gh-axi\`.
 Immediately record the PR per delivery-contract step 2 and confirm \`pr=\` landed; that recording is a hard gate on continuing.
-Then append \`working: PR {url} open, awaiting merge\` - an open PR is progress, not completion, so do NOT stop here.
-While the PR is open and nothing needs you, append \`$PAUSED_VERB: awaiting merge on PR {url}\` and idle: firstmate then rechecks you on a long cadence instead of treating the quiet pane as a wedge.
-Only a merge reaches firstmate promptly; every other outcome, a close included, arrives on that slower recheck. So whenever you are rechecked, re-read the PR state first and report the terminal line if it has reached one.
+Then hand the merge over as the human decision it is: append \`needs-decision [key=merge]: PR {url} is open; merging it is not mine\` and stop.
+That is rule 6, not rule 4's \`$PAUSED_VERB:\` - the merge is not a wait that clears on its own, it needs the configured authority to act, and only a rule 6 line reaches firstmate promptly enough to get that.
+Stopping there does not end the task; an open PR is progress, not completion. When firstmate comes back to you, re-read the PR state rather than assuming it is still open, and report the terminal line as soon as it has reached one.
 Report a terminal state exactly once, when the PR reaches one:
 - merged -> \`done: PR {url} merged\`
 - closed without merging -> \`done: PR {url} closed without merging\`
@@ -468,9 +468,9 @@ Two firstmate-specific rules layer on top of that guidance:
 The pipeline opens the PR itself, so record it per delivery-contract step 2 the moment the pipeline shows you that URL, not once the pipeline hands control back to you.
 That recording only writes firstmate-side metadata outside the repo, so it cannot disturb the active run, and it keeps the PR associated even if you stop before CI turns green.
 Return from the pipeline at its CI-ready point - do not leave /no-mistakes monitoring in the background until merge - and confirm \`pr=\` landed before you continue past that point.
-Green CI is NOT done: append \`working: PR {url} checks green, awaiting merge\` and do NOT stop.
-While the PR is open and nothing needs you, append \`$PAUSED_VERB: awaiting merge on PR {url}\` and idle: firstmate then rechecks you on a long cadence instead of treating the quiet pane as a wedge.
-Only a merge reaches firstmate promptly; every other outcome, a close included, arrives on that slower recheck. So whenever you are rechecked, re-read the PR state first and report the terminal line if it has reached one.
+Green CI is NOT done. Hand the merge over as the human decision it is: append \`needs-decision [key=merge]: PR {url} checks green; merging it is not mine\` and stop.
+That is rule 6, not rule 4's \`$PAUSED_VERB:\` - the merge is not a wait that clears on its own, it needs the configured authority to act, and only a rule 6 line reaches firstmate promptly enough to get that.
+Stopping there does not end the task; a green PR is progress, not completion. When firstmate comes back to you, re-read the PR state rather than assuming it is still open, and report the terminal line as soon as it has reached one.
 Report a terminal state exactly once, when the PR reaches one:
 - merged -> \`done: PR {url} merged\`
 - closed without merging -> \`done: PR {url} closed without merging\`
