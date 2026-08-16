@@ -981,7 +981,13 @@ families_for_changed_path() {
       # lane's contract coverage re-runs.
       printf '%s\n' real-herdr-gated
       ;;
-    bin/fm-admit.sh|\
+    bin/fm-admit.sh|bin/fm-admit-lib.sh)
+      # The guard's own contract suite, plus the spawn seam that calls it -
+      # tests/fm-spawn-admit.test.sh drives the guard end to end and lives in
+      # backend-dispatch, so guard changes have to select that family too.
+      printf '%s\n' pure-contract-unit
+      printf '%s\n' backend-dispatch
+      ;;
     bin/fm-lint.sh|bin/fm-install-shellcheck.sh|\
     bin/fm-brief.sh|bin/fm-ensure-agents-md.sh|bin/fm-crew-state.sh|\
     bin/fm-decision-hold.sh|bin/fm-supervision*|bin/fm-transition-lib.sh|\

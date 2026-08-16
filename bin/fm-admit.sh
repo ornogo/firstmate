@@ -27,6 +27,11 @@
 # stolen - stealing would break the linearization the ledger depends on - so a
 # lock-timeout refusal names the directory for founder repair instead.
 #
+# That lock, the ledger's location, and the read-and-validate step live in
+# bin/fm-admit-lib.sh, because bin/fm-spawn.sh's resume mode has to hold the same
+# lock in its own shell across worker creation. This script is still the ledger's
+# only writer.
+#
 # admit refuses on duplicate, cap, missing-key, binding-conflict,
 # ledger-unusable, or lock-timeout, each with a distinct one-line message. A
 # refusal, for any reason, creates no new ledger entry and mutates no existing
@@ -46,15 +51,20 @@ set -eu
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
-DATA="$FM_HOME/data"
-LEDGER="$DATA/admission-ledger.json"
-LOCK="$DATA/admission-ledger.lock"
 
-# Tracked in-script constants. The PoC cap is fixed at 1. A quarantined entry
+# Where the ledger lives, the lock over it, and the schema check that decides
+# whether it may be believed are shared with bin/fm-spawn.sh's resume mode,
+# which must hold the same lock across worker creation. One owner for all three.
+# shellcheck source=bin/fm-admit-lib.sh
+. "$SCRIPT_DIR/fm-admit-lib.sh"
+fm_admit_resolve_paths "$FM_HOME"
+DATA=$FM_ADMIT_DATA_DIR
+LEDGER=$FM_ADMIT_LEDGER
+
+# Tracked in-script constant. The PoC cap is fixed at 1. A quarantined entry
 # keeps counting against it, so a quarantine halts new admissions until the
 # founder resolves it; that conservative posture is intentional.
 ADMIT_CAP=1
-LOCK_WAIT_SECS="${FM_ADMIT_LOCK_WAIT_SECS:-10}"
 
 usage() {
   cat <<'EOF'
@@ -70,83 +80,38 @@ die() { printf 'error: %s\n' "$1" >&2; exit 2; }
 abort() { printf 'error: %s\n' "$1" >&2; exit 1; }
 refuse() { printf 'refused (%s): %s\n' "$1" "$2" >&2; exit 1; }
 
+# Turns a library failure into this script's exit contract. The library reports
+# rather than exits, so the mapping is made once, here: an argument the founder
+# typed wrong is usage (2), and everything else is a refusal (1).
+lib_report() {
+  case "$FM_ADMIT_ERR_CLASS" in
+    usage) die "$FM_ADMIT_ERR" ;;
+    *) refuse "$FM_ADMIT_ERR_CLASS" "$FM_ADMIT_ERR" ;;
+  esac
+}
+
 # --- lock -------------------------------------------------------------------
 #
-# The traps are armed before the acquire loop, not after it, so a signal
-# arriving in the instant between mkdir returning and LOCK_HELD being set is the
-# only unprotected window bash leaves. lock_release is a no-op until then.
+# bin/fm-admit-lib.sh owns the lock and deliberately installs no traps, so
+# signal handling stays this script's. They are armed before the acquire loop,
+# not after it, so a signal arriving in the instant between mkdir returning and
+# the held flag being set is the only unprotected window bash leaves. The
+# release is a no-op until then.
 
-LOCK_HELD=
+trap 'fm_admit_lock_release' EXIT
+trap 'fm_admit_lock_release; exit 130' INT
+trap 'fm_admit_lock_release; exit 143' TERM
 
-lock_release() {
-  [ -n "$LOCK_HELD" ] || return 0
-  LOCK_HELD=
-  rm -f "$LOCK/pid" 2>/dev/null || true
-  rmdir "$LOCK" 2>/dev/null || true
-}
-
-trap 'lock_release' EXIT
-trap 'lock_release; exit 130' INT
-trap 'lock_release; exit 143' TERM
-
-lock_acquire() {
-  local deadline
-  case "$LOCK_WAIT_SECS" in
-    ''|*[!0-9]*) die "FM_ADMIT_LOCK_WAIT_SECS must be a non-negative integer, got: $LOCK_WAIT_SECS" ;;
-  esac
-  # mkdir fails with ENOENT, not EEXIST, when the ledger directory is missing,
-  # and the loop below cannot tell the two apart: against an unprovisioned
-  # FM_HOME it would spin out the whole wait and then blame a lock nobody holds.
-  # Checking first turns that into an immediate, accurate refusal. This is not a
-  # provisioning step - the ledger and its directory are bootstrap's to create,
-  # and making one here would admit against a ledger the founder never installed.
-  [ -d "$DATA" ] \
-    || refuse ledger-unusable "the admission ledger directory $DATA does not exist; bootstrap provisions it along with the ledger (no directory, no lock, no read, no spawn)"
-  deadline=$((SECONDS + LOCK_WAIT_SECS))
-  while ! mkdir "$LOCK" 2>/dev/null; do
-    if [ "$SECONDS" -ge "$deadline" ]; then
-      refuse lock-timeout "the admission ledger lock $LOCK stayed held for ${LOCK_WAIT_SECS}s; no lock, no read, no spawn (a lock left behind by a dead process is founder repair: confirm no admission is running, then remove that directory)"
-    fi
-    sleep 0.1
-  done
-  LOCK_HELD=1
-  printf '%s\n' "$$" > "$LOCK/pid" 2>/dev/null || true
-}
+lock_acquire() { fm_admit_lock_acquire || lib_report; }
 
 # --- ledger -----------------------------------------------------------------
 
-# Sets LEDGER_JSON to the validated ledger body. Never called through command
-# substitution, so a refusal exits the real shell and runs the real EXIT trap.
-LEDGER_JSON=
+# Reads and validates the ledger, refusing through this script's exit contract
+# rather than returning. Never called through command substitution, so a refusal
+# exits the real shell and runs the real EXIT trap.
+ledger_read() { fm_admit_ledger_read || lib_report; }
 
-ledger_read() {
-  local reason=
-  if [ -L "$LEDGER" ]; then
-    reason="it is a symlink"
-  elif [ ! -e "$LEDGER" ]; then
-    reason="it does not exist (a missing ledger is never treated as empty; bootstrap provisions it as {})"
-  elif [ ! -f "$LEDGER" ]; then
-    reason="it is not a regular file"
-  elif [ ! -r "$LEDGER" ]; then
-    reason="it is not readable"
-  fi
-  [ -z "$reason" ] || refuse ledger-unusable "the admission ledger $LEDGER cannot be used: $reason"
-
-  LEDGER_JSON=$(cat "$LEDGER") \
-    || refuse ledger-unusable "the admission ledger $LEDGER cannot be used: it could not be read"
-
-  printf '%s' "$LEDGER_JSON" | jq -e '
-    type == "object"
-    and (keys_unsorted | all(test("^ORN-[0-9]+$")))
-    and (to_entries | all(.value
-      | type == "object"
-      and (.branch | type == "string" and length > 0)
-      and (.worktree | type == "string" and length > 0)
-      and (.reserved_at | type == "string" and length > 0)
-      and (.status == "active" or .status == "quarantined")))
-  ' >/dev/null 2>&1 \
-    || refuse ledger-unusable "the admission ledger $LEDGER cannot be used: it is not a JSON object mapping ORN keys to {branch, worktree, reserved_at, status in active|quarantined}"
-}
+ledger_query() { fm_admit_ledger_query "$@"; }
 
 # ledger_write <json>: temp file in the ledger's own directory, then an atomic
 # rename over the ledger while the lock is still held.
@@ -165,8 +130,6 @@ ledger_write() {
   fi
 }
 
-ledger_query() { printf '%s' "$LEDGER_JSON" | jq "$@"; }
-
 # Every jq filter this script runs, in one place. jq owns each `$` here: they
 # name --arg bindings and must reach jq unexpanded, which is also the property
 # that keeps ledger content data - it arrives through --arg and is never spliced
@@ -183,8 +146,6 @@ ledger_query() { printf '%s' "$LEDGER_JSON" | jq "$@"; }
 
 # --- argument shapes --------------------------------------------------------
 
-upper() { printf '%s' "$1" | tr '[:lower:]' '[:upper:]'; }
-
 # Sets BRANCH_KEY to the uppercase ledger key, or returns non-zero when the
 # branch name does not carry exactly one positioned Linear issue key.
 BRANCH_KEY=
@@ -199,7 +160,7 @@ branch_key() {
   # The key starts right after the Conventional-Commit type's '/' and is bounded
   # by a '-' or the end of the name, so a key buried mid-slug is not positioned.
   [[ $branch =~ ^[a-z]+/(orn-[0-9]+)(-[^/]*)?$ ]] || return 1
-  BRANCH_KEY=$(upper "${BASH_REMATCH[1]}")
+  BRANCH_KEY=$(fm_admit_upper "${BASH_REMATCH[1]}")
 }
 
 # Sets WORKTREE_PATH, for the same reason require_issue_key does. Strips
@@ -238,8 +199,8 @@ normalize_worktree() {
 ISSUE_KEY=
 
 require_issue_key() {
-  ISSUE_KEY=$(upper "$1")
-  [[ $ISSUE_KEY =~ ^ORN-[0-9]+$ ]] || die "not a Linear issue key: $1"
+  fm_admit_require_issue_key "$1" || lib_report
+  ISSUE_KEY=$FM_ADMIT_ISSUE_KEY
 }
 
 # --- subcommands ------------------------------------------------------------
