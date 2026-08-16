@@ -275,7 +275,10 @@ resolve_directory_input() {
 # wants a refusal on an unresolvable path checks for one itself.
 real_path_or_raw() {  # <path>
   local path=$1 real
-  if real=$(cd "$path" 2>/dev/null && pwd -P); then
+  # CDPATH='' and `--` for the same reason resolve_directory_input above uses
+  # them: a caller's path is data, and an exported CDPATH or a leading `-` must
+  # not turn it into a lookup elsewhere or into an option to cd.
+  if real=$(CDPATH='' cd -- "$path" 2>/dev/null && pwd -P); then
     printf '%s\n' "$real"
   else
     printf '%s\n' "$path"

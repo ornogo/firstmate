@@ -94,7 +94,10 @@ fm_backend_tmux_window_exists() {  # <session> <window-name>
   command -v tmux >/dev/null 2>&1 || return 2
   tmux has-session -t "$ses" 2>/dev/null || return 1
   names=$(tmux list-windows -t "$ses" -F '#{window_name}' 2>/dev/null) || return 2
-  if printf '%s\n' "$names" | grep -qx "$wname"; then
+  # -F, matching fm_backend_tmux_agent_state below: a task id may contain `.`
+  # (fm_backend_validate_task_endpoint allows it), and this answer decides
+  # whether a second worker starts, so the name must match literally.
+  if printf '%s\n' "$names" | grep -Fqx "$wname"; then
     return 0
   fi
   return 1
