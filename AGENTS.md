@@ -349,6 +349,7 @@ The worker reports the PR as soon as CI first becomes green rather than holding 
 
 For PR-based ship tasks the worker records its own PR: its brief has it run `bin/fm-pr-check.sh <id> <PR url>` as soon as the PR exists, which writes `pr=` and the forge's `pr_head=` when available into the task's meta and arms the watcher's merge poll.
 It then reports that URL on a `working:` line - `direct-PR` once the PR is open, `no-mistakes` once CI is green - and holds until the PR reaches a terminal state, so a ship task's `done:` line means merged or closed without merging, never a pushed branch, an open PR, or green CI.
+Neither that `working:` line nor the merge wait the worker declares after it is captain-relevant, and the armed poll fires only on a merge, so an open PR awaiting your merge authority reaches you on section 8's fleet review and bounded pause recheck rather than as its own wake - the recorded `pr=` and the URL in the declared wait are what make that review find it.
 A worker whose recording did not land stops with a blocker instead of carrying the delivery toward merge; run `bin/fm-pr-check.sh <id> <PR url>` yourself before treating that PR as tracked.
 Tell the captain the PR's full URL, always the complete `https://...` link rather than a bare `#number`, a concise outcome summary, and the no-mistakes risk level when applicable.
 A captain instruction to merge is explicit authority; `yolo` is the only standing routine authority.
