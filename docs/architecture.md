@@ -305,15 +305,17 @@ Clean default-branch clones fast-forward to `origin/<default>`, and a clean deta
 Dirty clones, non-default branches, detached HEADs with unique commits, diverged defaults, and default branches checked out in another worktree are reported as `STUCK:` with their behind count and left untouched.
 Fetches blocked by an orphaned `.git/packed-refs.lock` use bounded retries and remove the lock only when the shared staleness proof can prove it abandoned; [configuration.md](configuration.md#toolchain) owns the recovery details and tuning knobs.
 Local-only projects, clones without an origin remote, and fetch failures remain benign skips.
-The refresh also prunes local branches whose remote is gone and that no worktree still needs.
+The refresh never deletes a branch, a worktree, or a working-tree file; `bin/fm-destructive-automation-check.sh` pins that.
 
-## Self-updates stay safe
+## Updates stay safe
 
-`/updatefirstmate` fast-forwards the running firstmate repo and registered secondmate homes from `origin`, then re-reads updated instructions and nudges updated secondmates without touching project clones.
+There is no runtime self-update path in this fork: a running firstmate never updates itself or its registered secondmates, and there is no captain-invocable update skill.
+`bin/fm-update.sh` is run out of band by the operator, or an operator-directed agent on another machine, against an explicit reviewed commit.
+It fast-forwards the target firstmate repo and registered secondmate homes from `origin`, then nudges updated secondmates to re-read their instructions without touching project clones.
 For a remote route, the configured code root updates from its own origin on that host before the persistent home fast-forwards to the code-root commit.
 The update is fast-forward only: dirty, diverged, offline, and off-default targets are reported and left untouched.
 Local homes share the guarded fast-forward helper, while remote updates delegate the same safety decision to the configured host through the generic transport.
-The mechanics are owned by the `/updatefirstmate` skill and firstmate's operating manual in [`AGENTS.md`](../AGENTS.md) (self-update).
+The mechanics are owned by `bin/fm-update.sh` and firstmate's operating manual in [`AGENTS.md`](../AGENTS.md) (updates).
 
 ## Restart-proof
 

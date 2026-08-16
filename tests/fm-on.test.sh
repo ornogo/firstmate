@@ -400,6 +400,23 @@ assert_contains "$out" 'command is not tracked by the configured remote root' "t
   || fail "the tracked-command authorization consulted checkout-local git"
 pass "tracked-command authorization excludes checkout-local git"
 
+# Source contract: with git unresolvable, the tracked doctor's own content is
+# the only thing authorizing it, so a doctor edit that does not re-pin
+# DOCTOR_SHA256 leaves that path permanently unbootstrappable. The behavioral
+# cases below reach it only where git genuinely fails to resolve, which is
+# host-dependent -- a690a02's stale pin passed on macOS and failed on Linux CI.
+# This check does not depend on the host, so a stale pin fails everywhere.
+pinned_doctor_sha=$(sed -n 's/^DOCTOR_SHA256=\([0-9a-f]\{64\}\)$/\1/p' "$ROOT/bin/fm-remote-entrypoint.sh")
+[ -n "$pinned_doctor_sha" ] || fail "fm-remote-entrypoint.sh carries no DOCTOR_SHA256 pin to verify"
+if command -v shasum >/dev/null 2>&1; then
+  actual_doctor_sha=$(shasum -a 256 "$ROOT/bin/fm-remote-doctor.sh" | awk '{print $1}')
+else
+  actual_doctor_sha=$(sha256sum "$ROOT/bin/fm-remote-doctor.sh" | awk '{print $1}')
+fi
+[ "$pinned_doctor_sha" = "$actual_doctor_sha" ] \
+  || fail "DOCTOR_SHA256 pins $pinned_doctor_sha but bin/fm-remote-doctor.sh hashes to $actual_doctor_sha; re-pin it in bin/fm-remote-entrypoint.sh whenever the doctor changes"
+pass "the pinned doctor bootstrap identity matches the tracked doctor"
+
 set +e
 out=$(
   # shellcheck disable=SC2329 # Exported for indirect use by fm_on.

@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
-# Self-update a running firstmate and its secondmates to the latest origin.
+# Update a firstmate home and its secondmates to the latest origin.
 #
-# Mechanical half of the /updatefirstmate skill. Fast-forwards the running
+# OPERATOR-RUN ONLY. This fork has no runtime self-update path (AGENTS.md 12):
+# there is no captain-invocable update skill, and a running firstmate never
+# invokes this on itself or its registered secondmates. It is executed out of
+# band by the operator, or an operator-directed agent on another machine,
+# against an explicit reviewed commit. Fast-forwards the target
 # firstmate repo's default branch from origin, then fast-forwards every
 # registered secondmate home. Local homes are treehouse worktrees or standalone
 # clones; remote routes update their configured code root on that host and then
@@ -58,7 +62,7 @@ fi
 
 # --- secondmates -----------------------------------------------------------
 # An updated live secondmate is nudged whenever it advanced (nudge_requires_instr
-# is "no" here): /updatefirstmate's nudge is a gentle re-read steer, kept on the
+# is "no" here): this update's nudge is a gentle re-read steer, kept on the
 # same condition it has always used.
 
 FF_NUDGE_WINDOWS=""
