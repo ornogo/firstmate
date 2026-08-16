@@ -123,6 +123,26 @@ assert_absent "$(ledger_path)" "a refusal must not create the ledger it could no
 assert_lock_released "missing ledger"
 pass "a missing ledger refuses as unusable and is never treated as empty"
 
+# An FM_HOME bootstrap has never provisioned has no data directory at all, and
+# that is not lock contention. It has to be said that way too: mkdir fails
+# ENOENT on the missing parent, which an acquire loop cannot tell from a lock
+# someone else holds, so an unguarded loop spends the whole wait bound and then
+# blames a lock nobody is holding. The bound here is deliberately non-zero -
+# refusing before the loop is the only way to answer this fast.
+FM_HOME_ROOT=$(fm_test_tmproot fm-admit) || fail "cannot create a fixture root"
+set +e
+OUT=$(FM_HOME="$FM_HOME_ROOT" FM_ADMIT_LOCK_WAIT_SECS=3 "$ADMIT" \
+  admit --branch feat/orn-1-x --worktree /pool/wt-1 2>&1)
+RC=$?
+set -e
+expect_code 1 "$RC" "unprovisioned data directory"
+assert_contains "$OUT" "refused (ledger-unusable)" "an unprovisioned data directory must refuse as unusable"
+assert_contains "$OUT" "$FM_HOME_ROOT/data does not exist" "the refusal must name the directory that is missing"
+assert_not_contains "$OUT" "lock-timeout" "a missing directory must never be reported as lock contention"
+assert_absent "$(lock_path)" "a refusal must not create the lock directory it could not take"
+assert_absent "$(ledger_path)" "a refusal must not provision the ledger bootstrap owns"
+pass "an unprovisioned data directory refuses immediately instead of spinning out the lock wait"
+
 new_home
 seed_ledger '{}'
 mv "$(ledger_path)" "$FM_HOME_ROOT/data/real.json"

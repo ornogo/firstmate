@@ -94,6 +94,14 @@ lock_acquire() {
   case "$LOCK_WAIT_SECS" in
     ''|*[!0-9]*) die "FM_ADMIT_LOCK_WAIT_SECS must be a non-negative integer, got: $LOCK_WAIT_SECS" ;;
   esac
+  # mkdir fails with ENOENT, not EEXIST, when the ledger directory is missing,
+  # and the loop below cannot tell the two apart: against an unprovisioned
+  # FM_HOME it would spin out the whole wait and then blame a lock nobody holds.
+  # Checking first turns that into an immediate, accurate refusal. This is not a
+  # provisioning step - the ledger and its directory are bootstrap's to create,
+  # and making one here would admit against a ledger the founder never installed.
+  [ -d "$DATA" ] \
+    || refuse ledger-unusable "the admission ledger directory $DATA does not exist; bootstrap provisions it along with the ledger (no directory, no lock, no read, no spawn)"
   deadline=$((SECONDS + LOCK_WAIT_SECS))
   while ! mkdir "$LOCK" 2>/dev/null; do
     if [ "$SECONDS" -ge "$deadline" ]; then
