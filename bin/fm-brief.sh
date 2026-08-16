@@ -383,7 +383,7 @@ fi
 # two statements that do bind it and names why the other two cannot.
 IFS= read -r -d '' DELIVERY_CONTRACT <<EOF || true
 # Delivery contract - worker-landed-lite v1
-1. **Done means merged.** An open PR is progress, not completion. A pushed branch, an open PR, and green CI are all mid-flight states; none of them ends this task. The only terminal states are: the PR merged, the PR closed without merging, or a blocker that genuinely needs a human.
+1. **Done means merged.** An open PR is progress, not completion. A pushed branch, an open PR, and green CI are all mid-flight states; none of them ends this task. The only states that end it are: the PR merged, the PR closed without merging, or a blocker that genuinely needs a human. Your definition of done below may also have you append one earlier \`done:\` to hand control back to firstmate mid-task; where it does, it says so and says what happens next. That handoff is not this task ending, and nothing else you write may claim completion before one of the three states above.
 2. **Record the PR the moment it exists.** As soon as the PR is open, run \`$PR_CHECK_CMD\` exactly as written - the leading assignments point it at the records for this task - and confirm it exits 0. That writes the \`pr=\` association firstmate depends on; branch-based discovery does not work here, so nothing else records it. A failed run, or a \`pr=\` that never lands, is a HARD STOP: append \`blocked: fm-pr-check.sh did not record pr= for {url}\` and stop. Do not carry this delivery toward merge without that record.
 3. **You hold no merge authority.** Never invoke a firstmate merge helper (\`fm-pr-merge.sh\`, \`fm-merge-local.sh\`), never merge the PR, never enable auto-merge on it, and never force-push it. Merge authorization is server-side branch protection plus the merge queue, and nothing you hold can bypass either.
 4. **Single-ref delivery.** Push only your \`fm/$ID\` branch, and only to the delivery repo's \`origin\`. Open at most one PR, and only from that branch. No side refs, no additional remotes, no other repositories.
@@ -443,9 +443,11 @@ EOF
     IFS= read -r -d '' DOD <<EOF || true
 # Definition of done
 Delivery contract: mode=no-mistakes
-The task is complete only when committed on your branch.
-When you believe it is complete, append \`done: {summary}\` to the status file and stop.
+This mode has two stages, and only the second one can end the task.
+Stage one is the implementation. When you believe it is implemented and committed on your branch, append \`done: {summary}\` to the status file and stop.
+That line is the mid-task handoff delivery-contract step 1 refers to: it reports the implementation, not the delivery.
 Firstmate will then instruct you to run /no-mistakes to validate and ship a PR.
+Stage two is that pipeline, and it runs through to the terminal states at the end of this section.
 
 You drive no-mistakes by responding to its gates, not by implementing fixes.
 Follow the guidance no-mistakes itself provides for the mechanics: it loads when you invoke /no-mistakes, and \`no-mistakes axi run --help\` plus the \`help\` lines in each \`axi\` response are authoritative and version-matched to the installed binary.

@@ -421,6 +421,28 @@ test_pr_delivering_briefs_carry_the_whole_worker_landed_contract() {
   assert_grep 'an open PR is progress, not completion, so do NOT stop here' \
     "$home/data/brief-landed-direct-PR/brief.md" \
     "direct-PR: brief does not say an open PR is not completion"
+
+  # no-mistakes is the one mode that writes two `done:` lines: an implementation
+  # handoff that triggers validation, and the delivery's terminal line. Statement
+  # 1 reserves completion for the delivery, so the handoff has to be named as a
+  # handoff in both places or the brief contradicts itself - and a worker
+  # resolving that contradiction either way breaks the mode. Dropping the handoff
+  # strands firstmate with no validation trigger; treating it as terminal ends the
+  # task before a PR exists.
+  assert_grep 'That line is the mid-task handoff' \
+    "$home/data/brief-landed-no-mistakes/brief.md" \
+    "no-mistakes: the pre-validation done: is not marked as a mid-task handoff"
+  assert_grep "append \`done: {summary}\` to the status file and stop" \
+    "$home/data/brief-landed-no-mistakes/brief.md" \
+    "no-mistakes: brief lost the implementation handoff that triggers validation"
+  assert_no_grep 'The task is complete only when committed on your branch' \
+    "$home/data/brief-landed-no-mistakes/brief.md" \
+    "no-mistakes: brief still calls the implementation commit the whole task"
+  for mode in no-mistakes direct-PR; do
+    assert_grep 'may also have you append one earlier' \
+      "$home/data/brief-landed-$mode/brief.md" \
+      "$mode: statement 1 does not reconcile an earlier handoff done:"
+  done
   pass "fm-brief.sh: PR-delivering briefs carry all four worker-landed-lite statements"
 }
 
