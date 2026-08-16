@@ -926,6 +926,10 @@ families_for_changed_path() {
       # Founder-run teardown is the one place branch deletion is sanctioned;
       # rule 2 of the destructive-automation contract says so by name.
       printf '%s\n' pure-contract-unit
+      # tests/fm-gotmp.test.sh builds a fake firstmate root by symlinking each
+      # library teardown sources, so its fixture has to be kept in step with
+      # teardown's source list or teardown cannot start inside it.
+      printf '%s\n' session-bootstrap
       ;;
     bin/fm-session-start.sh|bin/fm-bootstrap.sh|\
     bin/fm-sessionstart-nudge.sh|bin/fm-startup-network.sh|bin/fm-tangle*|bin/fm-update.sh|\
@@ -958,6 +962,13 @@ families_for_changed_path() {
       # pre-teardown run abort (pr-forge).
       printf '%s\n' pure-contract-unit
       printf '%s\n' pr-forge
+      ;;
+    bin/fm-proc-cwd-lib.sh)
+      # The shared cwd-attribution scan, sourced by bin/fm-teardown.sh's leaked
+      # process reap. Mirrors that caller's families.
+      printf '%s\n' pr-forge
+      printf '%s\n' pure-contract-unit
+      printf '%s\n' session-bootstrap
       ;;
     bin/fm-composer-lib.sh)
       # The shared shape catalogue is vendor-rendered signal; a change to it
