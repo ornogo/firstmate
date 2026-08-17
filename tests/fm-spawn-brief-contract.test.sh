@@ -251,10 +251,19 @@ Do the thing.
 # tests/fm-spawn-admit.test.sh pins as the legacy shape; this suite is about the
 # brief, so it stays on the shape that reaches the brief checks with the fewest
 # other requirements.
+#
+# The harness is pinned because an unpinned one is resolved by detecting the
+# harness firstmate is itself running under, which makes the suite read a
+# property of the host rather than of the brief. A host with no harness around
+# it resolves "unknown", and fm-spawn.sh refuses an unknown harness ABOVE the
+# brief checks, so every case below would fail for a reason it is not testing.
+# The backend is pinned for the same reason. Any verified adapter serves, and
+# the one case that reaches a backend reaches a fake tmux placed on PATH.
 make_home() {
   local name=$1 home
   home="$TMP_ROOT/$name/home"
   mkdir -p "$home/config" "$home/data" "$home/state" "$home/projects"
+  printf 'claude\n' > "$home/config/crew-harness"
   printf '%s\n' "$home"
 }
 
@@ -276,6 +285,7 @@ run_spawn() {
   shift
   FM_ROOT_OVERRIDE='' FM_HOME="$home" FM_STATE_OVERRIDE='' FM_DATA_OVERRIDE='' \
     FM_PROJECTS_OVERRIDE='' FM_CONFIG_OVERRIDE='' FM_SPAWN_NO_GUARD=1 \
+    FM_BACKEND=tmux \
     "$SPAWN" "$@" 2>&1
 }
 
