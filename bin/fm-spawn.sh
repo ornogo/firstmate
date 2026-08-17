@@ -2000,7 +2000,7 @@ fi
 # exclusion the "no delimiter is a refusal" rule below would refuse every
 # charter.
 if [ "$KIND" != secondmate ] && ! fm_brief_header_carries_contract "$BRIEF"; then
-  echo "error: $BRIEF carries no worker-landed-lite delivery contract: its header region (everything above the first '$FM_BRIEF_TASK_BODY_DELIMITER' line) must contain the line '$FM_DELIVERY_CONTRACT_SENTINEL'; re-scaffold the brief with bin/fm-brief.sh rather than adding the line by hand, so the rest of the contract comes with it" >&2
+  echo "error: $BRIEF carries no worker-landed-lite delivery contract: its header region (everything above the first '$FM_BRIEF_TASK_BODY_DELIMITER' line) must contain the line '$FM_DELIVERY_CONTRACT_SENTINEL'; re-scaffold the brief with bin/fm-brief.sh rather than adding the line by hand, so the rules that line stands for come with it. Re-scaffolding replaces the task description with a fresh placeholder, so on a brief that already carries real task text - one scaffolded before this contract, which is what a relaunch of an older task finds - copy that text back in afterwards" >&2
   exit 1
 fi
 
