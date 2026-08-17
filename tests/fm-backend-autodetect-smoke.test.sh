@@ -45,6 +45,8 @@ export FM_GATE_REFUSE_BYPASS=1
 
 # shellcheck source=tests/herdr-test-safety.sh
 . "$ROOT/tests/herdr-test-safety.sh"
+# shellcheck source=tests/brief-fixture-lib.sh
+. "$ROOT/tests/brief-fixture-lib.sh"
 # This suite asserts that HERDR_ENV=1 alone selects the backend, and it runs
 # against its own isolated lab session. A Herdr pane inherited from the terminal
 # it was launched in must not follow spawn into that session as a cross-session
@@ -90,7 +92,7 @@ mkdir -p "$STATE" "$DATA/$ID" "$CONFIG"
 # Backend auto-detection is what is under test here, so opt out of the default-on
 # presentation projection and keep the assertions on the flat per-home workspace.
 printf 'off\n' > "$CONFIG/herdr-presentation-spaces"
-printf 'trivial autodetect-smoke brief: nothing to do.\n' > "$DATA/$ID/brief.md"
+fm_test_write_brief "$DATA/$ID/brief.md" no-mistakes
 
 PROJ="$TMP_ROOT/scratch-project"
 mkdir -p "$PROJ"

@@ -9,9 +9,9 @@
 #   per task at intake (AGENTS.md section 7); data/projects.md holds the captain's
 #   standing posture as context, not as this task's answer, so a spawn never looks
 #   the mode up. A ship spawn additionally reads the brief's recorded
-#   "Delivery contract: mode=<mode>" line and REFUSES a mismatch, so the worker's
-#   instructions and the recorded task delivery cannot drift apart; a brief
-#   scaffolded before that line existed warns once and launches on the flag. When
+#   "Delivery contract: mode=<mode>" line, from the brief's header region only,
+#   and REFUSES both a mismatch and a brief that records no such line, so the
+#   worker's instructions and the recorded task delivery cannot drift apart. When
 #   the explicit mode carries less rigor than the project's standing posture, a
 #   loud one-line deviation notice is printed and the spawn continues.
 #   no-mistakes-prod-only is a registry policy rather than a task mode and is
@@ -319,6 +319,8 @@ SUB_HOME_MARKER=".fm-secondmate-home"
 . "$SCRIPT_DIR/fm-trace-context-lib.sh"
 # shellcheck source=bin/fm-remote-readiness-lib.sh
 . "$SCRIPT_DIR/fm-remote-readiness-lib.sh"
+# shellcheck source=bin/fm-brief-contract-lib.sh
+. "$SCRIPT_DIR/fm-brief-contract-lib.sh"
 # --resume reads the admission ledger and holds its lock in THIS shell, from the
 # binding check through worker creation. bin/fm-admit.sh releases the lock on
 # exit by construction, so shelling out to it - the way the fresh-spawn admission
@@ -1986,6 +1988,22 @@ else
 fi
 [ -f "$BRIEF" ] || { echo "error: no brief at $BRIEF" >&2; exit 1; }
 
+# Worker-landed-lite delivery contract, checked before any endpoint exists. A
+# generated brief states the four things that make a worker safe to land work
+# with - done means merged, run fm-pr-check.sh once the PR exists, invoke no
+# merge helper, deliver a single ref - and carries the sentinel in its header to
+# say so. Launching a worker whose brief omits that is launching one operating
+# under unknown instructions, so this refuses rather than warning.
+#
+# Secondmate charters are excluded: they carry no sentinel and no task body,
+# therefore no delimiter, and a charter is not a delivery contract. Without that
+# exclusion the "no delimiter is a refusal" rule below would refuse every
+# charter.
+if [ "$KIND" != secondmate ] && ! fm_brief_header_carries_contract "$BRIEF"; then
+  echo "error: $BRIEF carries no worker-landed-lite delivery contract: its header region (everything above the first '$FM_BRIEF_TASK_BODY_DELIMITER' line) must contain the line '$FM_DELIVERY_CONTRACT_SENTINEL'; re-scaffold the brief with bin/fm-brief.sh rather than adding the line by hand, so the rules that line stands for come with it. Re-scaffolding replaces the task description with a fresh placeholder, so on a brief that already carries real task text - one scaffolded before this contract, which is what a relaunch of an older task finds - copy that text back in afterwards" >&2
+  exit 1
+fi
+
 delivery_rigor_rank() {  # <mode> -> 3 (most rigor) .. 1 (least); 0 = not a task mode
   case "$1" in
     no-mistakes) echo 3 ;;
@@ -1999,11 +2017,17 @@ delivery_rigor_rank() {  # <mode> -> 3 (most rigor) .. 1 (least); 0 = not a task
 # fm-brief.sh records a ship brief's mode as a fixed "Delivery contract: mode=<mode>"
 # line. A spawn that disagrees would launch a worker whose instructions and whose
 # recorded task delivery differ, which is the exact drift this contract prevents.
+#
+# Read from the same bounded header region as the sentinel above, never from the
+# whole file: the task body is issue-derived, so a whole-file scan lets the task
+# description supply the mode it is checked against, which is no check at all.
+# bin/fm-brief-contract-lib.sh owns that rule and the reasoning behind it.
 if [ "$KIND" = ship ]; then
   PROJ_NAME=$(basename "$PROJ_ABS")
-  BRIEF_MODE=$(sed -n 's/^Delivery contract: mode=\([^ ]*\).*$/\1/p' "$BRIEF" | head -n 1)
+  BRIEF_MODE=$(fm_brief_header_delivery_mode "$BRIEF") || BRIEF_MODE=
   if [ -z "$BRIEF_MODE" ]; then
-    echo "warning: $BRIEF records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode $MODE - confirm its definition of done matches" >&2
+    echo "error: $BRIEF records no delivery contract line in its header region (everything above the first '$FM_BRIEF_TASK_BODY_DELIMITER' line), so there is nothing to check this spawn's --mode $MODE against; a mode line in the task body does not count, because that is the part of the brief the task description supplies. A brief scaffolded before that line moved into the header still carries it further down, next to the definition of done: move that one line up into the header region, which keeps the task description intact. Re-scaffold with bin/fm-brief.sh only when there is no such line to move, because re-scaffolding replaces the task description with a fresh placeholder" >&2
+    exit 1
   elif [ "$BRIEF_MODE" != "$MODE" ]; then
     echo "error: delivery mismatch for $ID: the brief says mode=$BRIEF_MODE but this spawn passed --mode $MODE; correct the flag or re-scaffold the brief so the worker's instructions and the task record agree" >&2
     exit 1

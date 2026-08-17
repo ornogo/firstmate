@@ -357,7 +357,7 @@ make_seam_case() {
   printf '{}\n' > "$SEAM_HOME/data/admission-ledger.json"
   fm_git_worktree "$SEAM_PROJ" "$SEAM_WT" "wt-$name"
   fm_git_init_commit "$SEAM_OTHER"
-  printf 'brief for %s\n' "$id" > "$SEAM_HOME/data/$id/brief.md"
+  fm_test_write_brief "$SEAM_HOME/data/$id/brief.md" no-mistakes
   touch "$SEAM_HOME/state/.last-watcher-beat"
 }
 

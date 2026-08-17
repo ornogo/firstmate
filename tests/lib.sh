@@ -196,6 +196,12 @@ fm_git_identity() {
   export GIT_COMMITTER_NAME=$GIT_AUTHOR_NAME GIT_COMMITTER_EMAIL=$GIT_AUTHOR_EMAIL
 }
 
+# fm_test_write_brief <path> [mode]: contract-valid brief fixtures. It lives in
+# its own file because the backend and end-to-end suites drive the same real
+# fm-spawn.sh but deliberately do not source this library.
+# shellcheck source=tests/brief-fixture-lib.sh
+. "$ROOT/tests/brief-fixture-lib.sh"
+
 # fm_git_init_commit <dir>: create a git repo at <dir> with a README and one
 # commit. Uses an inline identity so it works whether or not fm_git_identity was
 # called.

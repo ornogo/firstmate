@@ -41,6 +41,8 @@ command -v treehouse >/dev/null 2>&1 || { echo "skip: treehouse not found (requi
 
 # shellcheck source=tests/herdr-test-safety.sh
 . "$ROOT/tests/herdr-test-safety.sh"
+# shellcheck source=tests/brief-fixture-lib.sh
+. "$ROOT/tests/brief-fixture-lib.sh"
 
 # Every spawn below states its own launcher identity, so a pane inherited from
 # the terminal this suite was started in must not leak into any of them.
@@ -185,9 +187,12 @@ mkdir -p "$PRES_HOME/state" "$PRES_HOME/config"
 
 for id in uniqA uniqB dupC dupD staleF smE presU presD; do
   mkdir -p "$PRIMARY_HOME/data/$id" "$SM_HOME/data/$id" "$PRES_HOME/data/$id"
-  printf 'trivial launcher-placement brief: nothing to do.\n' > "$PRIMARY_HOME/data/$id/brief.md"
-  printf 'trivial launcher-placement brief: nothing to do.\n' > "$SM_HOME/data/$id/brief.md"
-  printf 'trivial launcher-placement brief: nothing to do.\n' > "$PRES_HOME/data/$id/brief.md"
+  # Every id in this loop is spawned as a ship task below, so each brief needs
+  # the delivery contract in its header region. The secondmate charter written
+  # after the loop deliberately does not: fm-spawn.sh excludes charters.
+  fm_test_write_brief "$PRIMARY_HOME/data/$id/brief.md" no-mistakes
+  fm_test_write_brief "$SM_HOME/data/$id/brief.md" no-mistakes
+  fm_test_write_brief "$PRES_HOME/data/$id/brief.md" no-mistakes
 done
 mkdir -p "$PRIMARY_HOME/data/$SM2_ID"
 printf 'trivial secondmate charter brief: nothing to do.\n' > "$PRIMARY_HOME/data/$SM2_ID/brief.md"
