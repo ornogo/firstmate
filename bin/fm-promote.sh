@@ -8,7 +8,8 @@
 # according to this task's delivery mode).
 # A scout records no delivery posture, so promotion is where this task's delivery
 # contract is decided: --mode and --yolo are REQUIRED and written into the meta
-# alongside the kind= flip. Firstmate resolves both at promotion time, having just
+# alongside the kind= flip, and --mode is additionally recorded in the brief's
+# header, which is where a ship spawn reads it back from. Firstmate resolves both at promotion time, having just
 # read the scout's report (AGENTS.md section 7); data/projects.md holds the
 # captain's standing posture as context, and this script never looks it up.
 # no-mistakes-prod-only is a registry policy rather than a task mode and is refused.
@@ -19,11 +20,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
+DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 
 # shellcheck source=bin/fm-pr-lib.sh
 . "$SCRIPT_DIR/fm-pr-lib.sh"
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
+# shellcheck source=bin/fm-brief-contract-lib.sh
+. "$SCRIPT_DIR/fm-brief-contract-lib.sh"
 
 MODE=
 YOLO=
@@ -107,6 +111,21 @@ fm_lock_acquire_wait "$META_LOCK"
 META_LOCK_HELD=1
 [ -f "$META" ] || { echo "error: no meta for task $ID at $META" >&2; exit 1; }
 grep -qx 'kind=scout' "$META" || { echo "error: task $ID is not a scout task (kind=scout not in meta)" >&2; exit 1; }
+
+# Record the decided mode in the brief's header before flipping the task record,
+# never after: a ship spawn checks the two against each other, so the ordering is
+# what keeps a failure here from leaving a ship record above a brief that names
+# no mode. That pairing is not only about the spawn happening next - a relaunch
+# after this worker's agent dies re-reads both, with the worktree still holding
+# unlanded work, and a brief that never learned its mode makes that recovery
+# impossible. Promotion is the only point that knows the mode, so it is the only
+# point that can write it.
+BRIEF="$DATA/$ID/brief.md"
+if [ ! -f "$BRIEF" ]; then
+  echo "warning: no brief at $BRIEF, so this task's delivery mode is recorded only in its task record; a later relaunch of $ID will refuse for the missing brief, as it already would have" >&2
+elif ! fm_brief_header_set_delivery_mode "$BRIEF" "$MODE"; then
+  echo "warning: $BRIEF predates the worker-landed-lite delivery contract (its header region carries no '$FM_DELIVERY_CONTRACT_SENTINEL' line), so promotion could not record mode=$MODE in it; the promotion below still applies. Adding the contract by hand would assert rules this brief does not state, so re-scaffold with bin/fm-brief.sh before relaunching $ID - until then a relaunch is refused, though the running worker is unaffected" >&2
+fi
 
 TMP="$STATE/.$ID.meta.promote.${BASHPID:-$$}"
 grep -v -e '^kind=' -e '^mode=' -e '^yolo=' "$META" > "$TMP"

@@ -11,10 +11,13 @@
 #   3. FM_BRIEF_DELIVERY_MODE_PREFIX - the prefix of the line a ship brief
 #      carries in that same header region to record its delivery mode.
 #
-# bin/fm-brief.sh emits all three, and the readers below consume them through
-# fm_brief_header_region: everything from a brief's first line up to the first
-# occurrence of the delimiter (exclusive). bin/fm-spawn.sh refuses to launch a
-# worker whose brief fails either reader.
+# bin/fm-brief.sh emits all three, and everything below works through one
+# definition of the header region - everything from a brief's first line up to
+# the first occurrence of the delimiter (exclusive), computed by
+# fm_brief_header_region. Two readers consume it, and bin/fm-spawn.sh refuses to
+# launch a worker whose brief fails either. One writer amends it, for the single
+# case where a brief's delivery mode is decided after it was generated:
+# bin/fm-promote.sh turning a scout into a ship task.
 #
 # WHY BOTH FACTS ARE READ FROM THE SAME BOUNDED REGION, AND ONLY FROM IT.
 # A generated brief has exactly one attacker-or-issue-controlled span: the task
@@ -100,4 +103,62 @@ fm_brief_header_delivery_mode() {  # <brief path> -> prints the mode recorded in
     esac
   done <<< "$header"
   return 1
+}
+
+# fm_brief_header_set_delivery_mode <brief path> <mode>: record <mode> as the
+# brief's header delivery mode, in place, so fm_brief_header_delivery_mode reads
+# it back. Non-zero, having changed nothing, when the brief has no header region
+# to write into.
+#
+# The one caller is bin/fm-promote.sh. A scout brief carries the sentinel but no
+# mode line, because a scout has no delivery posture to record; promotion is
+# where that posture is first decided, so it is also where the brief has to start
+# carrying it. Leaving the brief alone and flipping only the task record is what
+# strands a promoted scout: its record says ship while its brief still says
+# nothing, and every later spawn of it - a relaunch after its agent died, with
+# the worktree still holding unlanded work - is refused by the ship mode check.
+#
+# This is a writer in the reader's file because it obeys the same region rule,
+# and the rule is what makes it safe: the new line goes immediately after the
+# sentinel, so it lands where a generated ship brief carries it and inside the
+# only span a checker trusts. A caller writing the line itself would need its own
+# copy of the boundary scan and of all three strings, which is the drift this
+# file exists to prevent - and getting it wrong would append the mode below the
+# delimiter, where the task description could have supplied it.
+#
+# Refusing a brief whose header carries no sentinel is deliberate, and it is not
+# a case to "fix" by writing one: the sentinel asserts that the brief states the
+# four worker-landed-lite rules, so stamping it onto a brief that does not state
+# them forges the contract instead of recording a mode. Such a brief needs
+# re-scaffolding, which is the caller's warning to give.
+#
+# An existing header mode line is replaced rather than joined, so promoting is
+# idempotent and can never leave two lines for the reader to choose between. Any
+# mode line below the delimiter is left exactly as it is: that text belongs to
+# the task body, this function does not read contract facts from it, and quietly
+# editing a worker's task description is not this function's business.
+fm_brief_header_set_delivery_mode() {  # <brief path> <mode> -> 0 when the header now records <mode>
+  local brief=$1 mode=$2 tmp line in_header=1 placed=0
+  fm_brief_header_carries_contract "$brief" || return 1
+  tmp="$brief.setmode.${BASHPID:-$$}"
+  if ! while IFS= read -r line || [ -n "$line" ]; do
+         if [ "$in_header" = 1 ]; then
+           if [ "$line" = "$FM_BRIEF_TASK_BODY_DELIMITER" ]; then
+             in_header=0
+           else
+             case $line in
+               "$FM_BRIEF_DELIVERY_MODE_PREFIX"*) continue ;;
+             esac
+           fi
+         fi
+         printf '%s\n' "$line"
+         if [ "$placed" = 0 ] && [ "$line" = "$FM_DELIVERY_CONTRACT_SENTINEL" ]; then
+           printf '%s%s\n' "$FM_BRIEF_DELIVERY_MODE_PREFIX" "$mode"
+           placed=1
+         fi
+       done < "$brief" > "$tmp"; then
+    rm -f -- "$tmp"
+    return 1
+  fi
+  mv "$tmp" "$brief"
 }
