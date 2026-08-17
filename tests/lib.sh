@@ -196,40 +196,11 @@ fm_git_identity() {
   export GIT_COMMITTER_NAME=$GIT_AUTHOR_NAME GIT_COMMITTER_EMAIL=$GIT_AUTHOR_EMAIL
 }
 
-# fm_test_write_brief <path> [mode]: write the smallest brief bin/fm-spawn.sh
-# will launch - the delivery-contract sentinel in the header region, a task-body
-# delimiter to bound that region, and, for a ship spawn, the recorded mode.
-#
-# For fixtures whose subject is something other than the brief. A suite that is
-# actually about brief content should generate one with bin/fm-brief.sh instead,
-# so it pins the real emitter rather than this stand-in.
-#
-# The two strings come from the contract library rather than being spelled here,
-# because a fixture carrying its own copy of the sentinel keeps passing after the
-# real one changes, which turns every suite using it into a false green.
-#
-# The mode default is ${2-...} rather than ${2:-...} so that an explicit empty
-# argument means "omit the mode line" instead of collapsing back to the default.
-# A scout brief is exactly that shape - sentinel, no mode - so the distinction is
-# a real fixture case, not a hypothetical one.
-fm_test_write_brief() {
-  local path=$1 mode=${2-no-mistakes} dir label
-  # shellcheck source=bin/fm-brief-contract-lib.sh
-  . "$ROOT/bin/fm-brief-contract-lib.sh"
-  dir=$(dirname "$path")
-  label=$(basename "$dir")
-  mkdir -p "$dir"
-  {
-    printf '%s\n' 'You are a crewmate.'
-    printf '%s\n' "$FM_DELIVERY_CONTRACT_SENTINEL"
-    # Both contract facts go in the header region, above the delimiter, because
-    # that is the only region fm-spawn.sh reads them from. An empty mode omits
-    # the line entirely, which is the shape of a scout brief.
-    [ -z "$mode" ] || printf '%s%s\n' "$FM_BRIEF_DELIVERY_MODE_PREFIX" "$mode"
-    printf '\n%s\n' "$FM_BRIEF_TASK_BODY_DELIMITER"
-    printf 'Fixture brief for %s.\n' "$label"
-  } > "$path"
-}
+# fm_test_write_brief <path> [mode]: contract-valid brief fixtures. It lives in
+# its own file because the backend and end-to-end suites drive the same real
+# fm-spawn.sh but deliberately do not source this library.
+# shellcheck source=tests/brief-fixture-lib.sh
+. "$ROOT/tests/brief-fixture-lib.sh"
 
 # fm_git_init_commit <dir>: create a git repo at <dir> with a README and one
 # commit. Uses an inline identity so it works whether or not fm_git_identity was
